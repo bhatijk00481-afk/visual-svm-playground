@@ -1,15 +1,32 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Hero } from "@/components/Hero";
 import { DatasetSelector } from "@/components/DatasetSelector";
 import { DatasetOverview } from "@/components/DatasetOverview";
 import { SVMVisualization } from "@/components/SVMVisualization";
 import { ParameterControls } from "@/components/ParameterControls";
+import { ModelSummary } from "@/components/ModelSummary";
+import { UnderstandingCards } from "@/components/UnderstandingCards";
+import { ControlPanel } from "@/components/ControlPanel";
 import { datasets, Dataset } from "@/data/datasets";
+import { SimpleSVMEngine, SVMResult } from "@/lib/svm-engine";
 
 const Index = () => {
   const [selectedDataset, setSelectedDataset] = useState<Dataset>(datasets[0]);
   const [C, setC] = useState<number>(1.0);
   const [gamma, setGamma] = useState<number>(0.1);
+  const [svmResult, setSvmResult] = useState<SVMResult | null>(null);
+
+  // Train SVM whenever parameters change
+  useEffect(() => {
+    const engine = new SimpleSVMEngine(selectedDataset.data, C, gamma, selectedDataset.kernel);
+    const result = engine.train();
+    setSvmResult(result);
+  }, [selectedDataset, C, gamma]);
+
+  const handleReset = () => {
+    setC(1.0);
+    setGamma(0.1);
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -25,14 +42,33 @@ const Index = () => {
         }}
       />
 
-      {selectedDataset && (
+      {selectedDataset && svmResult && (
         <>
           <DatasetOverview dataset={selectedDataset} />
           
-          <SVMVisualization 
-            dataset={selectedDataset}
+          <ControlPanel
+            selectedDataset={selectedDataset}
+            onSelectDataset={(dataset) => {
+              setSelectedDataset(dataset);
+              handleReset();
+            }}
             C={C}
             gamma={gamma}
+            onCChange={setC}
+            onGammaChange={setGamma}
+            onReset={handleReset}
+          />
+
+          <SVMVisualization 
+            dataset={selectedDataset}
+            result={svmResult}
+            C={C}
+            gamma={gamma}
+          />
+
+          <ModelSummary 
+            dataset={selectedDataset}
+            result={svmResult}
           />
 
           <ParameterControls 
@@ -40,6 +76,13 @@ const Index = () => {
             gamma={gamma}
             onCChange={setC}
             onGammaChange={setGamma}
+          />
+
+          <UnderstandingCards
+            dataset={selectedDataset}
+            result={svmResult}
+            C={C}
+            gamma={gamma}
           />
         </>
       )}
