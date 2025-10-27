@@ -14,18 +14,20 @@ const Index = () => {
   const [selectedDataset, setSelectedDataset] = useState<Dataset>(datasets[0]);
   const [C, setC] = useState<number>(1.0);
   const [gamma, setGamma] = useState<number>(0.1);
+  const [polynomialDegree, setPolynomialDegree] = useState<number>(2);
   const [svmResult, setSvmResult] = useState<SVMResult | null>(null);
 
   // Train SVM whenever parameters change
   useEffect(() => {
-    const engine = new SimpleSVMEngine(selectedDataset.data, C, gamma, selectedDataset.kernel);
+    const engine = new SimpleSVMEngine(selectedDataset.data, C, gamma, selectedDataset.kernel, polynomialDegree);
     const result = engine.train();
     setSvmResult(result);
-  }, [selectedDataset, C, gamma]);
+  }, [selectedDataset, C, gamma, polynomialDegree]);
 
   const handleReset = () => {
     setC(1.0);
     setGamma(0.1);
+    setPolynomialDegree(2);
   };
 
   return (
@@ -57,6 +59,8 @@ const Index = () => {
             onCChange={setC}
             onGammaChange={setGamma}
             onReset={handleReset}
+            polynomialDegree={polynomialDegree}
+            onPolynomialDegreeChange={setPolynomialDegree}
           />
 
           <SVMVisualization 
@@ -64,6 +68,7 @@ const Index = () => {
             result={svmResult}
             C={C}
             gamma={gamma}
+            polynomialDegree={polynomialDegree}
           />
 
           <ModelSummary 

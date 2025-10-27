@@ -55,23 +55,23 @@ function generateLinearData(): DataPoint[] {
 function generatePolynomialData(): DataPoint[] {
   const data: DataPoint[] = [];
   
-  // On Track students (sweet spot of study hours)
-  for (let i = 0; i < 55; i++) {
-    const hours = 10 + Math.random() * 25; // 10-35 hours
-    const score = 60 + (hours - 20) * 2 + Math.random() * 20; // Peak around 20 hours
+  // On Track students (blue points) - create a single well-defined cluster
+  // High study hours, high scores - top right area
+  for (let i = 0; i < 50; i++) {
+    const hours = 25 + Math.random() * 15; // 25-40 hours
+    const score = 75 + Math.random() * 20; // 75-95 scores
     data.push({
       x: hours,
-      y: Math.max(50, Math.min(100, score)),
-      label: hours > 8 && hours < 35 && score > 60 ? 1 : 0
+      y: score,
+      label: 1
     });
   }
   
-  // Needs Support (too little or too much study, or low scores)
-  for (let i = 0; i < 45; i++) {
-    const hours = Math.random() < 0.5 
-      ? Math.random() * 10 // Too little
-      : 35 + Math.random() * 15; // Too much
-    const score = 30 + Math.random() * 40;
+  // Needs Support students (orange points) - create a single well-defined cluster
+  // Low study hours, low scores - bottom left area
+  for (let i = 0; i < 50; i++) {
+    const hours = 5 + Math.random() * 15; // 5-20 hours
+    const score = 20 + Math.random() * 30; // 20-50 scores
     data.push({
       x: hours,
       y: score,

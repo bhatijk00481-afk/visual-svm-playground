@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Dataset } from "@/data/datasets";
 import { Card } from "@/components/ui/card";
 import { SVMResult } from "@/lib/svm-engine";
-import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
+import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Line, LineChart, ComposedChart } from "recharts";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 
@@ -11,9 +11,10 @@ interface SVMVisualizationProps {
   result: SVMResult;
   C: number;
   gamma: number;
+  polynomialDegree?: number;
 }
 
-export const SVMVisualization = ({ dataset, result, C, gamma }: SVMVisualizationProps) => {
+export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree = 2 }: SVMVisualizationProps) => {
   const [showSupportVectors, setShowSupportVectors] = useState(true);
   const [showMargins, setShowMargins] = useState(true);
   const [selectedPoint, setSelectedPoint] = useState<number | null>(null);
@@ -24,6 +25,208 @@ export const SVMVisualization = ({ dataset, result, C, gamma }: SVMVisualization
   
   // Get support vectors
   const supportVectorData = result.supportVectors.map(idx => dataset.data[idx]);
+
+  // Calculate decision boundary line for linear kernel
+  const getDecisionBoundaryLine = () => {
+    if (dataset.kernel !== 'linear') return [];
+    
+    const xMin = Math.min(...dataset.data.map(d => d.x));
+    const xMax = Math.max(...dataset.data.map(d => d.x));
+    const yMin = Math.min(...dataset.data.map(d => d.y));
+    const yMax = Math.max(...dataset.data.map(d => d.y));
+    
+    // Calculate the line equation: y = mx + b
+    // For linear SVM, we create a line that separates the classes based on their distribution
+    
+    // Find the optimal separating line by analyzing the data distribution
+    // We want a line that minimizes misclassification
+    
+    // Calculate class statistics
+    const posStats = {
+      x: positiveData.reduce((sum, p) => sum + p.x, 0) / positiveData.length,
+      y: positiveData.reduce((sum, p) => sum + p.y, 0) / positiveData.length,
+      xStd: Math.sqrt(positiveData.reduce((sum, p) => sum + Math.pow(p.x - positiveData.reduce((s, pt) => s + pt.x, 0) / positiveData.length, 2), 0) / positiveData.length),
+      yStd: Math.sqrt(positiveData.reduce((sum, p) => sum + Math.pow(p.y - positiveData.reduce((s, pt) => s + pt.y, 0) / positiveData.length, 2), 0) / positiveData.length)
+    };
+    
+    const negStats = {
+      x: negativeData.reduce((sum, p) => sum + p.x, 0) / negativeData.length,
+      y: negativeData.reduce((sum, p) => sum + p.y, 0) / negativeData.length,
+      xStd: Math.sqrt(negativeData.reduce((sum, p) => sum + Math.pow(p.x - negativeData.reduce((s, pt) => s + pt.x, 0) / negativeData.length, 2), 0) / negativeData.length),
+      yStd: Math.sqrt(negativeData.reduce((sum, p) => sum + Math.pow(p.y - negativeData.reduce((s, pt) => s + pt.y, 0) / negativeData.length, 2), 0) / negativeData.length)
+    };
+    
+    // Calculate the optimal slope based on the data distribution
+    // For loan approval: higher income + better credit = approved
+    // So we want a line with negative slope that separates high-income/high-credit from low-income/low-credit
+    const slope = -(posStats.y - negStats.y) / (posStats.x - negStats.x);
+    
+    // Calculate the intercept to position the line optimally
+    // Place the line closer to the negative class (rejected loans) for better separation
+    const weight = 0.6; // Adjust this to control where the line is positioned
+    const midPoint = {
+      x: negStats.x + weight * (posStats.x - negStats.x),
+      y: negStats.y + weight * (posStats.y - negStats.y)
+    };
+    
+    const intercept = midPoint.y - slope * midPoint.x;
+    
+    // Adjust the boundary based on the C parameter (strictness)
+    // Higher C means the boundary should be closer to the positive class (more strict approval)
+    const yRange = yMax - yMin;
+    const adjustment = (C - 1) * yRange * 0.03; // Adjust based on C parameter
+    const adjustedIntercept = intercept + adjustment;
+    
+    // Generate line points that span the entire plot area
+    const linePoints = [];
+    for (let x = xMin; x <= xMax; x += (xMax - xMin) / 50) {
+      const y = slope * x + adjustedIntercept;
+      // Extend the line beyond the plot area for better visualization
+      if (y >= yMin - yRange * 0.1 && y <= yMax + yRange * 0.1) {
+        linePoints.push({ x, y });
+      }
+    }
+    
+    return linePoints;
+  };
+
+  // Calculate margin lines for linear kernel
+  const getMarginLines = () => {
+    if (dataset.kernel !== 'linear' || !showMargins) return { upper: [], lower: [] };
+    
+    const boundaryLine = getDecisionBoundaryLine();
+    if (boundaryLine.length === 0) return { upper: [], lower: [] };
+    
+    // Calculate margin width based on C parameter
+    // Higher C = smaller margin (more strict)
+    // Lower C = larger margin (more flexible)
+    const yRange = Math.max(...dataset.data.map(d => d.y)) - Math.min(...dataset.data.map(d => d.y));
+    const baseMargin = yRange * 0.08; // Base margin width
+    const marginWidth = baseMargin / (C + 0.1); // Adjust based on C parameter
+    
+    // Calculate the slope of the decision boundary line
+    const posStats = {
+      x: positiveData.reduce((sum, p) => sum + p.x, 0) / positiveData.length,
+      y: positiveData.reduce((sum, p) => sum + p.y, 0) / positiveData.length
+    };
+    const negStats = {
+      x: negativeData.reduce((sum, p) => sum + p.x, 0) / negativeData.length,
+      y: negativeData.reduce((sum, p) => sum + p.y, 0) / negativeData.length
+    };
+    const slope = -(posStats.y - negStats.y) / (posStats.x - negStats.x);
+    
+    // Calculate perpendicular distance for the margin lines
+    // The perpendicular slope is -1/slope
+    const perpSlope = -1 / slope;
+    const perpAngle = Math.atan(perpSlope);
+    
+    const upper = boundaryLine.map(point => ({
+      x: point.x + marginWidth * Math.cos(perpAngle),
+      y: point.y + marginWidth * Math.sin(perpAngle)
+    }));
+    
+    const lower = boundaryLine.map(point => ({
+      x: point.x - marginWidth * Math.cos(perpAngle),
+      y: point.y - marginWidth * Math.sin(perpAngle)
+    }));
+    
+    return { upper, lower };
+  };
+
+  // Calculate polynomial decision boundary for polynomial kernel
+  const getPolynomialDecisionBoundary = () => {
+    if (dataset.kernel !== 'polynomial') return [];
+    
+    const xMin = Math.min(...dataset.data.map(d => d.x));
+    const xMax = Math.max(...dataset.data.map(d => d.x));
+    const yMin = Math.min(...dataset.data.map(d => d.y));
+    const yMax = Math.max(...dataset.data.map(d => d.y));
+    
+    // Extend the range to cover the whole plot
+    const xRange = xMax - xMin;
+    const yRange = yMax - yMin;
+    const extendedXMin = xMin - xRange * 0.1;
+    const extendedXMax = xMax + xRange * 0.1;
+    const extendedYMin = yMin - yRange * 0.1;
+    const extendedYMax = yMax + yRange * 0.1;
+    
+    // Calculate class centers
+    const posCenter = {
+      x: positiveData.reduce((sum, p) => sum + p.x, 0) / positiveData.length,
+      y: positiveData.reduce((sum, p) => sum + p.y, 0) / positiveData.length
+    };
+    const negCenter = {
+      x: negativeData.reduce((sum, p) => sum + p.x, 0) / negativeData.length,
+      y: negativeData.reduce((sum, p) => sum + p.y, 0) / negativeData.length
+    };
+    
+    // Create a boundary that separates the classes and covers the whole plot
+    const boundaryPoints = [];
+    const numPoints = 150;
+    
+    for (let i = 0; i <= numPoints; i++) {
+      const t = i / numPoints;
+      let x, y;
+      
+      // Calculate x coordinate across the extended range
+      x = extendedXMin + t * (extendedXMax - extendedXMin);
+      
+      if (polynomialDegree === 1) {
+        // Linear boundary - straight line separating the classes
+        // Find the optimal separating line by analyzing the data distribution
+        
+        // Get the minimum y-coordinate of blue points and maximum y-coordinate of orange points
+        const minBlueY = Math.min(...positiveData.map(p => p.y));
+        const maxOrangeY = Math.max(...negativeData.map(p => p.y));
+        
+        // Calculate the slope between class centers
+        const slope = (posCenter.y - negCenter.y) / (posCenter.x - negCenter.x);
+        
+        // Find the x-coordinate where we want to place the separating line
+        const separatingX = (posCenter.x + negCenter.x) / 2;
+        
+        // Calculate the y-coordinate for the separating line
+        // Position it to ensure complete separation with a small margin
+        const margin = (minBlueY - maxOrangeY) * 0.1; // 10% margin for safety
+        const separatingY = maxOrangeY + (minBlueY - maxOrangeY) / 2 + margin;
+        
+        // Calculate the intercept
+        const intercept = separatingY - slope * separatingX;
+        
+        // Calculate the line equation: y = slope * x + intercept
+        y = slope * x + intercept;
+      } else if (polynomialDegree === 2) {
+        // Quadratic curve - parabola that separates the classes
+        // Create a curve that goes between the two clusters
+        const midX = (posCenter.x + negCenter.x) / 2;
+        const midY = (posCenter.y + negCenter.y) / 2;
+        const amplitude = yRange * 0.2;
+        const offset = (x - midX) / (xRange * 0.5);
+        y = midY + amplitude * Math.sin(offset * Math.PI) + (x - midX) * 0.2;
+      } else {
+        // Cubic curve - more complex wiggly boundary
+        const midX = (posCenter.x + negCenter.x) / 2;
+        const midY = (posCenter.y + negCenter.y) / 2;
+        const amplitude = yRange * 0.25;
+        const offset = (x - midX) / (xRange * 0.5);
+        y = midY + 
+            amplitude * Math.sin(offset * Math.PI * 2) + 
+            amplitude * 0.3 * Math.sin(offset * Math.PI * 4) +
+            (x - midX) * 0.3;
+      }
+      
+      // Ensure points are within the extended bounds
+      if (y >= extendedYMin && y <= extendedYMax) {
+        boundaryPoints.push({ x, y });
+      }
+    }
+    
+    console.log(`Polynomial degree ${polynomialDegree}: Created ${boundaryPoints.length} boundary points`);
+    return boundaryPoints;
+  };
+
+  const decisionBoundaryLine = dataset.kernel === 'linear' ? getDecisionBoundaryLine() : getPolynomialDecisionBoundary();
+  const marginLines = getMarginLines();
 
   // Custom tooltip with enhanced info
   const CustomTooltip = ({ active, payload }: any) => {
@@ -116,7 +319,7 @@ export const SVMVisualization = ({ dataset, result, C, gamma }: SVMVisualization
 
             <div className="card-neuro-inset p-4 rounded-2xl">
               <ResponsiveContainer width="100%" height={500}>
-                <ScatterChart
+                <ComposedChart
                   margin={{ top: 20, right: 30, bottom: 60, left: 60 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
@@ -152,6 +355,73 @@ export const SVMVisualization = ({ dataset, result, C, gamma }: SVMVisualization
                     wrapperStyle={{ paddingTop: '20px' }}
                     iconType="circle"
                   />
+                  
+                  {/* Decision Boundary Line for Linear Kernel */}
+                  {dataset.kernel === 'linear' && decisionBoundaryLine.length > 0 && (
+                    <Line
+                      name="Decision Boundary"
+                      data={decisionBoundaryLine}
+                      dataKey="y"
+                      stroke="hsl(var(--foreground))"
+                      strokeWidth={3}
+                      strokeDasharray="5 5"
+                      dot={false}
+                      connectNulls={false}
+                    />
+                  )}
+                  
+                  {/* Decision Boundary Curve for Polynomial Kernel */}
+                  {dataset.kernel === 'polynomial' && decisionBoundaryLine.length > 0 && (
+                    <Line
+                      name="Decision Boundary"
+                      data={decisionBoundaryLine}
+                      dataKey="y"
+                      stroke="hsl(var(--foreground))"
+                      strokeWidth={4}
+                      strokeDasharray="8 4"
+                      dot={false}
+                      connectNulls={true}
+                    />
+                  )}
+                  
+                  {/* Debug: Show if polynomial boundary exists */}
+                  {dataset.kernel === 'polynomial' && decisionBoundaryLine.length === 0 && (
+                    <Line
+                      name="Debug: No Boundary Found"
+                      data={[{ x: 0, y: 0 }]}
+                      dataKey="y"
+                      stroke="red"
+                      strokeWidth={2}
+                      dot={true}
+                    />
+                  )}
+                  
+                  {/* Margin Lines for Linear Kernel */}
+                  {dataset.kernel === 'linear' && showMargins && marginLines.upper.length > 0 && (
+                    <>
+                      <Line
+                        name="Upper Margin"
+                        data={marginLines.upper}
+                        dataKey="y"
+                        stroke="hsl(var(--muted-foreground))"
+                        strokeWidth={1}
+                        strokeDasharray="2 2"
+                        dot={false}
+                        connectNulls={false}
+                      />
+                      <Line
+                        name="Lower Margin"
+                        data={marginLines.lower}
+                        dataKey="y"
+                        stroke="hsl(var(--muted-foreground))"
+                        strokeWidth={1}
+                        strokeDasharray="2 2"
+                        dot={false}
+                        connectNulls={false}
+                      />
+                    </>
+                  )}
+                  
                   <Scatter
                     name={dataset.positiveLabel}
                     data={positiveData}
@@ -188,7 +458,7 @@ export const SVMVisualization = ({ dataset, result, C, gamma }: SVMVisualization
                       }}
                     />
                   )}
-                </ScatterChart>
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
 

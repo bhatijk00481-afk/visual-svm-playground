@@ -13,6 +13,8 @@ interface ControlPanelProps {
   onCChange: (value: number) => void;
   onGammaChange: (value: number) => void;
   onReset: () => void;
+  polynomialDegree?: number;
+  onPolynomialDegreeChange?: (value: number) => void;
 }
 
 export const ControlPanel = ({
@@ -23,6 +25,8 @@ export const ControlPanel = ({
   onCChange,
   onGammaChange,
   onReset,
+  polynomialDegree = 2,
+  onPolynomialDegreeChange,
 }: ControlPanelProps) => {
   const handleSurpriseMe = () => {
     const randomC = Math.random() * 9.9 + 0.1;
@@ -172,6 +176,37 @@ export const ControlPanel = ({
               <div className="flex justify-between text-xs text-muted-foreground px-1">
                 <span>Big Picture</span>
                 <span>Fine Details</span>
+              </div>
+            </div>
+          )}
+
+          {/* Polynomial Degree Slider (for Polynomial kernel) */}
+          {selectedDataset.kernel === 'polynomial' && onPolynomialDegreeChange && (
+            <div className="mb-8">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                  Curve Complexity
+                </h4>
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl">〰️</span>
+                  <div className="px-3 py-1 rounded-full card-neuro-inset">
+                    <span className="text-sm font-bold text-accent">Degree {polynomialDegree}</span>
+                  </div>
+                </div>
+              </div>
+              
+              <Slider
+                value={[polynomialDegree]}
+                onValueChange={(values) => onPolynomialDegreeChange(values[0])}
+                min={1}
+                max={3}
+                step={1}
+                className="mb-2"
+              />
+              
+              <div className="flex justify-between text-xs text-muted-foreground px-1">
+                <span>Simple Line</span>
+                <span>Complex Curve</span>
               </div>
             </div>
           )}

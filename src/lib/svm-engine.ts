@@ -24,17 +24,20 @@ export class SimpleSVMEngine {
   private C: number;
   private gamma: number;
   private kernel: 'linear' | 'polynomial' | 'rbf' | 'sigmoid';
+  private polynomialDegree: number;
 
   constructor(
     data: DataPoint[],
     C: number,
     gamma: number,
-    kernel: 'linear' | 'polynomial' | 'rbf' | 'sigmoid'
+    kernel: 'linear' | 'polynomial' | 'rbf' | 'sigmoid',
+    polynomialDegree: number = 2
   ) {
     this.data = data;
     this.C = C;
     this.gamma = gamma;
     this.kernel = kernel;
+    this.polynomialDegree = polynomialDegree;
   }
 
   /**
@@ -74,7 +77,145 @@ export class SimpleSVMEngine {
     const posCenter = this.centerOfMass(positive);
     const negCenter = this.centerOfMass(negative);
 
-    // Find points closest to the decision boundary
+    // For linear kernel, find points closest to the decision boundary line
+    if (this.kernel === 'linear') {
+      // Calculate the decision boundary line equation based on class distribution
+      const posStats = {
+        x: positive.reduce((sum, p) => sum + p.x, 0) / positive.length,
+        y: positive.reduce((sum, p) => sum + p.y, 0) / positive.length
+      };
+      
+      const negStats = {
+        x: negative.reduce((sum, p) => sum + p.x, 0) / negative.length,
+        y: negative.reduce((sum, p) => sum + p.y, 0) / negative.length
+      };
+      
+      // Calculate the optimal slope based on the data distribution
+      const slope = -(posStats.y - negStats.y) / (posStats.x - negStats.x);
+      
+      // Calculate the intercept to position the line optimally
+      const weight = 0.6; // Same weight as in visualization
+      const midPoint = {
+        x: negStats.x + weight * (posStats.x - negStats.x),
+        y: negStats.y + weight * (posStats.y - negStats.y)
+      };
+      
+      const intercept = midPoint.y - slope * midPoint.x;
+      
+      // Find points closest to the decision boundary line
+      const pointsWithDistance = this.data.map((point, idx) => {
+        // Distance from point to line: |ax + by + c| / sqrt(a^2 + b^2)
+        // For line ax + by + c = 0, where a = slope, b = -1, c = intercept
+        const a = slope;
+        const b = -1;
+        const c = intercept;
+        const distance = Math.abs(a * point.x + b * point.y + c) / Math.sqrt(a * a + b * b);
+        
+        return { point, idx, distance };
+      });
+      
+      // Sort by distance to boundary and take closest points
+      pointsWithDistance.sort((a, b) => a.distance - b.distance);
+      
+      // Take points within a reasonable distance from the boundary
+      // This ensures support vectors cluster near the decision boundary line
+      const maxDistance = pointsWithDistance[Math.floor(pointsWithDistance.length * 0.25)].distance;
+      const boundaryPoints = pointsWithDistance
+        .filter(p => p.distance <= maxDistance)
+        .slice(0, Math.min(12, Math.floor(this.data.length * 0.15)))
+        .map(p => p.idx);
+      
+      return boundaryPoints;
+    }
+
+    // For polynomial kernel, find points near the curved decision boundary
+    if (this.kernel === 'polynomial') {
+      // Calculate class centers
+      const posCenter = {
+        x: positive.reduce((sum, p) => sum + p.x, 0) / positive.length,
+        y: positive.reduce((sum, p) => sum + p.y, 0) / positive.length
+      };
+      const negCenter = {
+        x: negative.reduce((sum, p) => sum + p.x, 0) / negative.length,
+        y: negative.reduce((sum, p) => sum + p.y, 0) / negative.length
+      };
+      
+      // Find points that are close to the decision boundary
+      const pointsWithDistance = this.data.map((point, idx) => {
+        // Calculate distance to the decision boundary based on polynomial degree
+        let distanceToBoundary;
+        
+        if (this.polynomialDegree === 1) {
+          // Linear boundary: distance to line
+          // Find the optimal separating line by analyzing the data distribution
+          
+          // Get the minimum y-coordinate of blue points and maximum y-coordinate of orange points
+          const minBlueY = Math.min(...positive.map(p => p.y));
+          const maxOrangeY = Math.max(...negative.map(p => p.y));
+          
+          // Calculate the slope between class centers
+          const slope = (posCenter.y - negCenter.y) / (posCenter.x - negCenter.x);
+          
+          // Find the x-coordinate where we want to place the separating line
+          const separatingX = (posCenter.x + negCenter.x) / 2;
+          
+          // Calculate the y-coordinate for the separating line
+          // Position it to ensure complete separation with a small margin
+          const margin = (minBlueY - maxOrangeY) * 0.1; // 10% margin for safety
+          const separatingY = maxOrangeY + (minBlueY - maxOrangeY) / 2 + margin;
+          
+          // Calculate the intercept
+          const intercept = separatingY - slope * separatingX;
+          
+          // Calculate distance to the line: |ax + by + c| / sqrt(a^2 + b^2)
+          // For line ax + by + c = 0, where a = slope, b = -1, c = intercept
+          const a = slope;
+          const b = -1;
+          const c = intercept;
+          distanceToBoundary = Math.abs(a * point.x + b * point.y + c) / Math.sqrt(a * a + b * b);
+        } else if (this.polynomialDegree === 2) {
+          // Quadratic boundary: distance to parabolic curve
+          const midX = (posCenter.x + negCenter.x) / 2;
+          const midY = (posCenter.y + negCenter.y) / 2;
+          const xRange = Math.max(...this.data.map(d => d.x)) - Math.min(...this.data.map(d => d.x));
+          const yRange = Math.max(...this.data.map(d => d.y)) - Math.min(...this.data.map(d => d.y));
+          const amplitude = yRange * 0.2;
+          const offset = (point.x - midX) / (xRange * 0.5);
+          const expectedY = midY + amplitude * Math.sin(offset * Math.PI) + (point.x - midX) * 0.2;
+          distanceToBoundary = Math.abs(point.y - expectedY);
+        } else {
+          // Cubic boundary: distance to wiggly curve
+          const midX = (posCenter.x + negCenter.x) / 2;
+          const midY = (posCenter.y + negCenter.y) / 2;
+          const xRange = Math.max(...this.data.map(d => d.x)) - Math.min(...this.data.map(d => d.x));
+          const yRange = Math.max(...this.data.map(d => d.y)) - Math.min(...this.data.map(d => d.y));
+          const amplitude = yRange * 0.25;
+          const offset = (point.x - midX) / (xRange * 0.5);
+          const expectedY = midY + 
+            amplitude * Math.sin(offset * Math.PI * 2) + 
+            amplitude * 0.3 * Math.sin(offset * Math.PI * 4) +
+            (point.x - midX) * 0.3;
+          distanceToBoundary = Math.abs(point.y - expectedY);
+        }
+        
+        return { point, idx, distanceToBoundary };
+      });
+      
+      // Sort by distance to boundary and take closest points
+      pointsWithDistance.sort((a, b) => a.distanceToBoundary - b.distanceToBoundary);
+      
+      // Take points within a reasonable distance from the boundary
+      // Use a smaller threshold to get points very close to the boundary
+      const maxDistance = pointsWithDistance[Math.floor(pointsWithDistance.length * 0.2)].distanceToBoundary;
+      const boundaryPoints = pointsWithDistance
+        .filter(p => p.distanceToBoundary <= maxDistance)
+        .slice(0, Math.min(12, Math.floor(this.data.length * 0.15)))
+        .map(p => p.idx);
+      
+      return boundaryPoints;
+    }
+
+    // For other non-linear kernels, use the original method
     this.data.forEach((point, idx) => {
       const distToPos = this.distance(point, posCenter);
       const distToNeg = this.distance(point, negCenter);
@@ -146,7 +287,7 @@ export class SimpleSVMEngine {
       
       case 'polynomial':
         const linear = dx * dx + dy * dy;
-        return Math.pow(linear + 1, 2);
+        return Math.pow(linear + 1, this.polynomialDegree);
       
       case 'rbf':
         return Math.exp(-this.gamma * (dx * dx + dy * dy));
