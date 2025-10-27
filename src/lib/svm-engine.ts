@@ -215,6 +215,94 @@ export class SimpleSVMEngine {
       return boundaryPoints;
     }
 
+    // For RBF kernel, find points near the decision boundary
+    if (this.kernel === 'rbf') {
+      // Find points that are close to the decision boundary based on RBF decision function
+      const pointsWithScore = this.data.map((point, idx) => {
+        // Calculate the decision function score at this point's location
+        const posInfluence = positive.reduce((sum, pos) => {
+          const distSq = Math.pow(point.x - pos.x, 2) + Math.pow(point.y - pos.y, 2);
+          return sum + Math.exp(-this.gamma * distSq);
+        }, 0) / positive.length;
+        
+        const negInfluence = negative.reduce((sum, neg) => {
+          const distSq = Math.pow(point.x - neg.x, 2) + Math.pow(point.y - neg.y, 2);
+          return sum + Math.exp(-this.gamma * distSq);
+        }, 0) / negative.length;
+        
+        const cAdjustment = 1 + (this.C - 1) * 0.2;
+        // The decision function value (distance from zero = how far from boundary)
+        const decisionValue = (posInfluence * cAdjustment) - negInfluence;
+        // Score is the absolute distance from zero (smaller = closer to boundary)
+        const score = Math.abs(decisionValue);
+        
+        return { point, idx, score, decisionValue };
+      });
+      
+      // Sort by score (closer to zero means closer to boundary)
+      pointsWithScore.sort((a, b) => a.score - b.score);
+      
+      // Take points closest to the boundary (where decision function is near zero)
+      // Include both purple and gray points that are near the boundary
+      const threshold = Math.max(0.3, pointsWithScore[Math.min(10, pointsWithScore.length - 1)]?.score || 0.3);
+      const boundaryPoints = pointsWithScore
+        .filter(p => p.score <= threshold) // Only points very close to boundary
+        .slice(0, Math.min(20, Math.floor(this.data.length * 0.25)));
+      
+      // If we didn't find enough points, take more with relaxed criteria
+      if (boundaryPoints.length < 8) {
+        return pointsWithScore
+          .slice(0, Math.min(20, Math.floor(this.data.length * 0.3)))
+          .map(p => p.idx);
+      }
+      
+      return boundaryPoints.map(p => p.idx);
+    }
+
+    // For sigmoid kernel, find points near the decision boundary
+    if (this.kernel === 'sigmoid') {
+      // Find points that are close to the decision boundary based on sigmoid decision function
+      const pointsWithScore = this.data.map((point, idx) => {
+        // Calculate the decision function score at this point's location
+        let posInfluence = 0;
+        positive.forEach(pos => {
+          const dotProduct = point.x * pos.x + point.y * pos.y;
+          posInfluence += Math.tanh(this.gamma * dotProduct + 1);
+        });
+        posInfluence /= positive.length;
+        
+        let negInfluence = 0;
+        negative.forEach(neg => {
+          const dotProduct = point.x * neg.x + point.y * neg.y;
+          negInfluence += Math.tanh(this.gamma * dotProduct + 1);
+        });
+        negInfluence /= negative.length;
+        
+        const cAdjustment = 1 + (this.C - 1) * 0.15;
+        const decisionValue = (posInfluence * cAdjustment) - negInfluence;
+        const score = Math.abs(decisionValue);
+        
+        return { point, idx, score, decisionValue };
+      });
+      
+      // Sort by score (closer to zero means closer to boundary)
+      pointsWithScore.sort((a, b) => a.score - b.score);
+      
+      // Take points closest to the boundary (where decision function is near zero)
+      const threshold = Math.max(0.3, pointsWithScore[Math.min(10, pointsWithScore.length - 1)]?.score || 0.3);
+      const boundaryPoints = pointsWithScore
+        .filter(p => p.score <= threshold)
+        .slice(0, Math.min(20, Math.floor(this.data.length * 0.25)));
+      
+      if (boundaryPoints.length < 8) {
+        return pointsWithScore
+          .slice(0, Math.min(20, Math.floor(this.data.length * 0.3)))
+          .map(p => p.idx);
+      }
+      
+      return boundaryPoints.map(p => p.idx);
+    }
+
     // For other non-linear kernels, use the original method
     this.data.forEach((point, idx) => {
       const distToPos = this.distance(point, posCenter);
