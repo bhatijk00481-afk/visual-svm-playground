@@ -206,62 +206,45 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
     return { upper, lower };
   };
 
-  // Calculate RBF decision boundary (freehand contour tightly enclosing positive cluster)
-  const getRBFDecisionBoundary = () => {
-    if (dataset.kernel !== 'rbf') return [];
-
-    const pts = positiveData.map(p => ({ x: p.x, y: p.y }));
-    if (pts.length < 3) return pts;
-
-    // Monotone chain convex hull
-    const sorted = [...pts].sort((a, b) => (a.x === b.x ? a.y - b.y : a.x - b.x));
-    const cross = (o: any, a: any, b: any) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-    const lower: any[] = [];
-    for (const p of sorted) {
-      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
-      lower.push(p);
-    }
-    const upper: any[] = [];
-    for (let i = sorted.length - 1; i >= 0; i--) {
-      const p = sorted[i];
-      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
-      upper.push(p);
-    }
-    let hull = lower.slice(0, lower.length - 1).concat(upper.slice(0, upper.length - 1));
-
-    // Expand hull slightly from centroid to avoid clipping edge points, keep minimal empty space
-    const centroid = {
-      x: hull.reduce((s, p) => s + p.x, 0) / hull.length,
-      y: hull.reduce((s, p) => s + p.y, 0) / hull.length,
-    };
-    const inflate = 1.02; // very small expansion (~2%)
-    hull = hull.map(p => ({ x: centroid.x + (p.x - centroid.x) * inflate, y: centroid.y + (p.y - centroid.y) * inflate }));
-
-    // Chaikin smoothing to get freehand-like contour
-    const chaikin = (poly: { x: number; y: number }[]) => {
-      const sm: { x: number; y: number }[] = [];
-      for (let i = 0; i < poly.length; i++) {
-        const p0 = poly[i];
-        const p1 = poly[(i + 1) % poly.length];
-        const Q = { x: 0.75 * p0.x + 0.25 * p1.x, y: 0.75 * p0.y + 0.25 * p1.y };
-        const R = { x: 0.25 * p0.x + 0.75 * p1.x, y: 0.25 * p0.y + 0.75 * p1.y };
-        sm.push(Q, R);
+  // Utility: simple k-means for small K
+  const kMeansCluster = (points: { x: number; y: number }[], k: number, iters = 10) => {
+    if (points.length === 0 || k <= 1) return [points];
+    const centroids: { x: number; y: number }[] = [];
+    const used = new Set<number>();
+    while (centroids.length < Math.min(k, points.length)) {
+      const idx = Math.floor(Math.random() * points.length);
+      if (!used.has(idx)) {
+        used.add(idx);
+        centroids.push({ ...points[idx] });
       }
-      return sm;
-    };
-    let boundary = hull;
-    const iterations = 2;
-    for (let i = 0; i < iterations; i++) boundary = chaikin(boundary);
-
-    return boundary;
+    }
+    let clusters: { x: number; y: number }[][] = [];
+    for (let iter = 0; iter < iters; iter++) {
+      clusters = Array.from({ length: centroids.length }, () => []);
+      points.forEach(p => {
+        let bi = 0; let bd = Infinity;
+        centroids.forEach((c, i) => {
+          const d = (p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y);
+          if (d < bd) { bd = d; bi = i; }
+        });
+        clusters[bi].push(p);
+      });
+      centroids.forEach((c, i) => {
+        const cl = clusters[i];
+        if (cl.length > 0) {
+          c.x = cl.reduce((s, p) => s + p.x, 0) / cl.length;
+          c.y = cl.reduce((s, p) => s + p.y, 0) / cl.length;
+        }
+      });
+    }
+    return clusters.filter(cl => cl.length > 0);
   };
 
-  // Negative class freehand contour (occasional shoppers)
-  const getRBFNegativeBoundary = () => {
-    if (dataset.kernel !== 'rbf') return [];
-    const pts = negativeData.map(p => ({ x: p.x, y: p.y }));
-    if (pts.length < 3) return pts;
-    const sorted = [...pts].sort((a, b) => (a.x === b.x ? a.y - b.y : a.x - b.x));
+  // Helpers for convex hull + smoothing freehand contour
+  const buildFreehandContour = (ptsIn: { x: number; y: number }[], inflate = 1.02, smoothIters = 2) => {
+    if (ptsIn.length < 3) return ptsIn;
+    const pts = [...ptsIn];
+    const sorted = pts.sort((a, b) => (a.x === b.x ? a.y - b.y : a.x - b.x));
     const cross = (o: any, a: any, b: any) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
     const lower: any[] = [];
     for (const p of sorted) {
@@ -276,7 +259,6 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
     }
     let hull = lower.slice(0, lower.length - 1).concat(upper.slice(0, upper.length - 1));
     const centroid = { x: hull.reduce((s, p) => s + p.x, 0) / hull.length, y: hull.reduce((s, p) => s + p.y, 0) / hull.length };
-    const inflate = 1.02;
     hull = hull.map(p => ({ x: centroid.x + (p.x - centroid.x) * inflate, y: centroid.y + (p.y - centroid.y) * inflate }));
     const chaikin = (poly: { x: number; y: number }[]) => {
       const sm: { x: number; y: number }[] = [];
@@ -290,9 +272,43 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
       return sm;
     };
     let boundary = hull;
-    const iterations = 2;
-    for (let i = 0; i < iterations; i++) boundary = chaikin(boundary);
+    for (let i = 0; i < smoothIters; i++) boundary = chaikin(boundary);
     return boundary;
+  };
+
+  // Calculate RBF decision boundary (freehand contours; multiple small contours when gamma/C are high)
+  const getRBFDecisionBoundary = () => {
+    if (dataset.kernel !== 'rbf') return [] as { x: number; y: number }[][];
+
+    const pts = positiveData.map(p => ({ x: p.x, y: p.y }));
+    if (pts.length < 3) return [pts];
+    // Determine cluster count by gamma/C scale (higher -> more clusters)
+    const gammaScale = Math.log10(Math.max(1e-6, gamma));
+    const cScale = Math.log10(Math.max(1e-6, C));
+    let k = 1;
+    if (gammaScale >= 0 || cScale >= 1) k = 3; // gamma >= 1 or C >= 10 -> 3 clusters
+    if (gammaScale >= 1 || cScale >= 2) k = 5; // gamma >= 10 or C >= 100 -> 5 clusters
+    k = Math.min(k, Math.max(1, Math.floor(pts.length / 8)));
+
+    const clusters = kMeansCluster(pts, k);
+    const inflate = 1.015 + Math.max(0, 0.01 - gamma * 0.01); // tiny padding that shrinks with gamma
+    return clusters.map(cl => buildFreehandContour(cl, inflate, 2));
+  };
+
+  // Negative class freehand contours (multiple when gamma/C high)
+  const getRBFNegativeBoundary = () => {
+    if (dataset.kernel !== 'rbf') return [] as { x: number; y: number }[][];
+    const pts = negativeData.map(p => ({ x: p.x, y: p.y }));
+    if (pts.length < 3) return [pts];
+    const gammaScale = Math.log10(Math.max(1e-6, gamma));
+    const cScale = Math.log10(Math.max(1e-6, C));
+    let k = 1;
+    if (gammaScale >= 0 || cScale >= 1) k = 2;
+    if (gammaScale >= 1 || cScale >= 2) k = 3;
+    k = Math.min(k, Math.max(1, Math.floor(pts.length / 10)));
+    const clusters = kMeansCluster(pts, k);
+    const inflate = 1.02;
+    return clusters.map(cl => buildFreehandContour(cl, inflate, 2));
   };
   
   // Helper function to calculate RBF decision function at a point
@@ -519,10 +535,11 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
   };
 
   const decisionBoundaryLine = dataset.kernel === 'linear' ? getDecisionBoundaryLine() 
-    : dataset.kernel === 'rbf' ? getRBFDecisionBoundary() 
+    : dataset.kernel === 'rbf' ? ([] as any) 
     : dataset.kernel === 'sigmoid' ? getSigmoidDecisionBoundary()
     : getPolynomialDecisionBoundary();
-  const rbfNegativeBoundary = dataset.kernel === 'rbf' ? getRBFNegativeBoundary() : [];
+  const rbfPositiveBoundaries = dataset.kernel === 'rbf' ? getRBFDecisionBoundary() : [];
+  const rbfNegativeBoundaries = dataset.kernel === 'rbf' ? getRBFNegativeBoundary() : [];
   const marginLines = getMarginLines();
 
   // For loan dataset, compute exactly one visual support vector on each margin (after boundary exists)
@@ -659,8 +676,8 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
                     type="number"
                     dataKey="x"
                     name={dataset.xAxisLabel}
-                    label={{ 
-                      value: dataset.xAxisLabel, 
+                    label={dataset.id === 'customers' ? undefined : {
+                      value: dataset.xAxisLabel,
                       position: 'bottom',
                       offset: 40,
                       style: { fill: 'hsl(var(--foreground))', fontSize: '14px', fontWeight: 500 }
@@ -683,10 +700,12 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
                     tick={{ fill: 'hsl(var(--muted-foreground))' }}
                   />
                   <Tooltip content={<CustomTooltip />} />
-                  <Legend 
-                    wrapperStyle={{ paddingTop: '20px' }}
-                    iconType="circle"
-                  />
+                  {dataset.id !== 'customers' && (
+                    <Legend 
+                      wrapperStyle={{ paddingTop: '20px' }}
+                      iconType="circle"
+                    />
+                  )}
                   
                   {/* Decision Boundary Line for Linear Kernel */}
                   {dataset.kernel === 'linear' && decisionBoundaryLine.length > 0 && (
@@ -716,28 +735,38 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
                     />
                   )}
                   
-                  {/* Decision Boundary Curves for RBF Kernel (positive and negative clusters) */}
-                  {dataset.kernel === 'rbf' && decisionBoundaryLine.length > 0 && (
-                    <Line
-                      name={`${dataset.positiveLabel} region`}
-                      data={decisionBoundaryLine}
-                      dataKey="y"
-                      stroke={dataset.positiveColor}
-                      strokeWidth={3}
-                      dot={false}
-                      connectNulls={true}
-                    />
+                  {/* Decision Boundary Curves for RBF Kernel (multiple contours) */}
+                  {dataset.kernel === 'rbf' && rbfPositiveBoundaries.length > 0 && (
+                    <>
+                      {rbfPositiveBoundaries.map((poly, idx) => (
+                        <Line
+                          key={`rbf-pos-${idx}`}
+                          name={`${dataset.positiveLabel} region ${idx + 1}`}
+                          data={poly}
+                          dataKey="y"
+                          stroke={dataset.positiveColor}
+                          strokeWidth={3}
+                          dot={false}
+                          connectNulls={true}
+                        />
+                      ))}
+                    </>
                   )}
-                  {dataset.kernel === 'rbf' && rbfNegativeBoundary.length > 0 && (
-                    <Line
-                      name={`${dataset.negativeLabel} region`}
-                      data={rbfNegativeBoundary}
-                      dataKey="y"
-                      stroke={dataset.negativeColor}
-                      strokeWidth={3}
-                      dot={false}
-                      connectNulls={true}
-                    />
+                  {dataset.kernel === 'rbf' && rbfNegativeBoundaries.length > 0 && (
+                    <>
+                      {rbfNegativeBoundaries.map((poly, idx) => (
+                        <Line
+                          key={`rbf-neg-${idx}`}
+                          name={`${dataset.negativeLabel} region ${idx + 1}`}
+                          data={poly}
+                          dataKey="y"
+                          stroke={dataset.negativeColor}
+                          strokeWidth={3}
+                          dot={false}
+                          connectNulls={true}
+                        />
+                      ))}
+                    </>
                   )}
                   
                   {/* Decision Boundary Curve for Sigmoid Kernel */}
@@ -918,7 +947,7 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
                         return { x: xNew, y: yNew, label: 1 as 1 };
                       });
                     })()}
-                    fill={dataset.positiveColor}
+                    fill={dataset.id === 'customers' ? 'hsl(280, 60%, 50%)' : dataset.positiveColor}
                     fillOpacity={0.7}
                     onClick={(data) => {
                       const idx = dataset.data.findIndex(d => d.x === data.x && d.y === data.y);
@@ -1038,7 +1067,7 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
                         return { x: xNew, y: yNew, label: 0 as 0 };
                       });
                     })()}
-                    fill={dataset.negativeColor}
+                    fill={dataset.id === 'customers' ? '#000000' : dataset.negativeColor}
                     fillOpacity={0.7}
                     onClick={(data) => {
                       const idx = dataset.data.findIndex(d => d.x === data.x && d.y === data.y);
@@ -1098,6 +1127,18 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
+            {dataset.id === 'customers' && (
+              <div className="mt-3 flex items-center gap-6 text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: 'hsl(280, 60%, 50%)' }} />
+                  <span className="text-foreground">Loyal Customer</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#000000' }} />
+                  <span className="text-foreground">Occasional Shopper</span>
+                </div>
+              </div>
+            )}
 
             {/* Selected Point Inspector */}
             {selectedPoint !== null && (
