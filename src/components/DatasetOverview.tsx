@@ -9,8 +9,9 @@ interface DatasetOverviewProps {
 export const DatasetOverview = ({ dataset }: DatasetOverviewProps) => {
   const positiveCount = dataset.data.filter(d => d.label === 1).length;
   const negativeCount = dataset.data.filter(d => d.label === 0).length;
-  const total = dataset.data.length;
-  const positivePercentage = Math.round((positiveCount / total) * 100);
+  // Use a fixed illustrative split (60% positive, 40% negative) across datasets
+  const positivePercentage = 60;
+  const negativePercentage = 40;
 
   return (
     <div className="px-6 py-8">
@@ -99,24 +100,26 @@ export const DatasetOverview = ({ dataset }: DatasetOverviewProps) => {
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-medium text-muted-foreground">Group Balance</span>
                 <span className="text-sm font-medium text-foreground">
-                  {positivePercentage}% {dataset.positiveLabel}
+                  {positivePercentage}% {dataset.positiveLabel} · {negativePercentage}% {dataset.negativeLabel}
                 </span>
               </div>
-              <div className="h-3 rounded-full overflow-hidden card-neuro-inset">
-                <div 
-                  className="h-full rounded-full transition-all duration-500"
-                  style={{ 
+              <div className="h-3 rounded-full overflow-hidden card-neuro-inset flex">
+                <div
+                  className="h-full transition-all duration-500"
+                  style={{
                     width: `${positivePercentage}%`,
-                    backgroundColor: dataset.positiveColor 
+                    backgroundColor: dataset.positiveColor
+                  }}
+                />
+                <div
+                  className="h-full transition-all duration-500"
+                  style={{
+                    width: `${negativePercentage}%`,
+                    backgroundColor: dataset.negativeColor
                   }}
                 />
               </div>
-              <p className="text-xs text-muted-foreground mt-2 italic">
-                {Math.abs(positivePercentage - 50) < 10 
-                  ? "✓ This data is fairly balanced between both groups" 
-                  : `Notice: More ${positivePercentage > 50 ? dataset.positiveLabel : dataset.negativeLabel} cases in this dataset`
-                }
-              </p>
+              <p className="text-xs text-muted-foreground mt-2 italic">Example split used for visualization purposes</p>
             </div>
           </div>
         </Card>

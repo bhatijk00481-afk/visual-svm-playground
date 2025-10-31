@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Dataset } from "@/data/datasets";
 import { Card } from "@/components/ui/card";
 import { SVMResult } from "@/lib/svm-engine";
@@ -18,15 +18,33 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
   const [showSupportVectors, setShowSupportVectors] = useState(true);
   const [showMargins, setShowMargins] = useState(true);
   const [selectedPoint, setSelectedPoint] = useState<number | null>(null);
+  const isLoan = dataset.id === 'loan';
+
+  // Keep support vectors visible across dataset changes
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useEffect(() => {
+    setShowSupportVectors(true);
+  }, [dataset.id]);
 
   // Prepare data for Recharts
   const positiveData = dataset.data.filter(d => d.label === 1);
   const negativeData = dataset.data.filter(d => d.label === 0);
+
+  // For the loan dataset, ignore important cases (support vectors) in boundary calculation
+  const supportSet = new Set(result.supportVectors);
+  const boundaryPositiveData = isLoan
+    ? dataset.data.filter((d, i) => d.label === 1 && !supportSet.has(i))
+    : positiveData;
+  const boundaryNegativeData = isLoan
+    ? dataset.data.filter((d, i) => d.label === 0 && !supportSet.has(i))
+    : negativeData;
   
   // Get support vectors
-  const supportVectorData = dataset.kernel === 'sigmoid'
-    ? result.supportVectors.map(idx => dataset.data[idx]).filter(p => p.label === 1)
-    : result.supportVectors.map(idx => dataset.data[idx]);
+  const supportVectorAll = result.supportVectors.map(idx => dataset.data[idx]);
+  const supportVectorPos = supportVectorAll.filter(p => p.label === 1);
+  const supportVectorNeg = supportVectorAll.filter(p => p.label === 0);
+
+  // NOTE: loan SV positions will be computed after decisionBoundaryLine is available
 
   // Calculate decision boundary line for linear kernel
   const getDecisionBoundaryLine = () => {
@@ -45,39 +63,86 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
     
     // Calculate class statistics
     const posStats = {
-      x: positiveData.reduce((sum, p) => sum + p.x, 0) / positiveData.length,
-      y: positiveData.reduce((sum, p) => sum + p.y, 0) / positiveData.length,
-      xStd: Math.sqrt(positiveData.reduce((sum, p) => sum + Math.pow(p.x - positiveData.reduce((s, pt) => s + pt.x, 0) / positiveData.length, 2), 0) / positiveData.length),
-      yStd: Math.sqrt(positiveData.reduce((sum, p) => sum + Math.pow(p.y - positiveData.reduce((s, pt) => s + pt.y, 0) / positiveData.length, 2), 0) / positiveData.length)
+      x: boundaryPositiveData.reduce((sum, p) => sum + p.x, 0) / Math.max(1, boundaryPositiveData.length),
+      y: boundaryPositiveData.reduce((sum, p) => sum + p.y, 0) / Math.max(1, boundaryPositiveData.length),
+      xStd: Math.sqrt(boundaryPositiveData.reduce((sum, p) => sum + Math.pow(p.x - (boundaryPositiveData.reduce((s, pt) => s + pt.x, 0) / Math.max(1, boundaryPositiveData.length)), 2), 0) / Math.max(1, boundaryPositiveData.length)),
+      yStd: Math.sqrt(boundaryPositiveData.reduce((sum, p) => sum + Math.pow(p.y - (boundaryPositiveData.reduce((s, pt) => s + pt.y, 0) / Math.max(1, boundaryPositiveData.length)), 2), 0) / Math.max(1, boundaryPositiveData.length))
     };
     
     const negStats = {
-      x: negativeData.reduce((sum, p) => sum + p.x, 0) / negativeData.length,
-      y: negativeData.reduce((sum, p) => sum + p.y, 0) / negativeData.length,
-      xStd: Math.sqrt(negativeData.reduce((sum, p) => sum + Math.pow(p.x - negativeData.reduce((s, pt) => s + pt.x, 0) / negativeData.length, 2), 0) / negativeData.length),
-      yStd: Math.sqrt(negativeData.reduce((sum, p) => sum + Math.pow(p.y - negativeData.reduce((s, pt) => s + pt.y, 0) / negativeData.length, 2), 0) / negativeData.length)
+      x: boundaryNegativeData.reduce((sum, p) => sum + p.x, 0) / Math.max(1, boundaryNegativeData.length),
+      y: boundaryNegativeData.reduce((sum, p) => sum + p.y, 0) / Math.max(1, boundaryNegativeData.length),
+      xStd: Math.sqrt(boundaryNegativeData.reduce((sum, p) => sum + Math.pow(p.x - (boundaryNegativeData.reduce((s, pt) => s + pt.x, 0) / Math.max(1, boundaryNegativeData.length)), 2), 0) / Math.max(1, boundaryNegativeData.length)),
+      yStd: Math.sqrt(boundaryNegativeData.reduce((sum, p) => sum + Math.pow(p.y - (boundaryNegativeData.reduce((s, pt) => s + pt.y, 0) / Math.max(1, boundaryNegativeData.length)), 2), 0) / Math.max(1, boundaryNegativeData.length))
     };
     
     // Calculate the optimal slope based on the data distribution
     // For loan approval: higher income + better credit = approved
     // So we want a line with negative slope that separates high-income/high-credit from low-income/low-credit
-    const slope = -(posStats.y - negStats.y) / (posStats.x - negStats.x);
-    
-    // Calculate the intercept to position the line optimally
-    // Place the line closer to the negative class (rejected loans) for better separation
-    const weight = 0.6; // Adjust this to control where the line is positioned
+    const slope = -(posStats.y - negStats.y) / Math.max(1e-6, (posStats.x - negStats.x));
+
+    // For loan dataset: enforce strict linear separability with explicit margin
+    if (isLoan) {
+      const a = -slope;
+      const b = 1;
+      const norm = Math.sqrt(a * a + b * b);
+      const yRange = yMax - yMin;
+      const baseMargin = yRange * 0.03; // base perpendicular margin target
+      const epsilon = yRange * 0.001; // ensure strict >, not equality
+
+      // Candidate margin to try (adaptive backoff if infeasible)
+      // Smaller C -> larger margin; Larger C -> smaller margin
+      const cFactor = 1 + (1 / Math.max(0.1, C)) * 2;
+      let m = baseMargin * cFactor + epsilon;
+
+      // Precompute projections a*x + b*y
+      const posProj = boundaryPositiveData.map(p => a * p.x + b * p.y);
+      const negProj = boundaryNegativeData.map(p => a * p.x + b * p.y);
+
+      // Find feasible intercept range for given m:
+      // For all pos: (proj + c)/norm >= m  => c >= m*norm - proj
+      // For all neg: (proj + c)/norm <= -m => c <= -m*norm - proj
+      const computeBounds = (margin: number) => {
+        const lower = Math.max(...posProj.map(v => margin * norm - v));
+        const upper = Math.min(...negProj.map(v => -margin * norm - v));
+        return { lower, upper };
+      };
+
+      let { lower, upper } = computeBounds(m);
+      let attempts = 0;
+      while (lower > upper && attempts < 10) {
+        // Not feasible; reduce margin and retry
+        m *= 0.8;
+        ({ lower, upper } = computeBounds(m));
+        attempts++;
+      }
+
+      // Choose c within feasible range; take midpoint for balanced separation
+      const cChosen = (lower + upper) / 2;
+      const adjustedIntercept = -cChosen;
+
+      // Generate points for the boundary with enforced margin
+      const linePoints = [] as { x: number; y: number }[];
+      for (let x = xMin; x <= xMax; x += (xMax - xMin) / 50) {
+        const y = slope * x + adjustedIntercept;
+        linePoints.push({ x, y });
+      }
+      // Store the enforced margin into a property on function (closure) for margin drawing
+      // @ts-ignore
+      (getDecisionBoundaryLine as any)._loanMargin = m;
+      return linePoints;
+    }
+
+    // Non-loan datasets: original heuristic with light adjustment
+    const weight = 0.6;
     const midPoint = {
       x: negStats.x + weight * (posStats.x - negStats.x),
       y: negStats.y + weight * (posStats.y - negStats.y)
     };
-    
-    const intercept = midPoint.y - slope * midPoint.x;
-    
-    // Adjust the boundary based on the C parameter (strictness)
-    // Higher C means the boundary should be closer to the positive class (more strict approval)
+    let intercept = midPoint.y - slope * midPoint.x;
     const yRange = yMax - yMin;
-    const adjustment = (C - 1) * yRange * 0.03; // Adjust based on C parameter
-    const adjustedIntercept = intercept + adjustment;
+    const adjustment = (C - 1) * yRange * 0.03;
+    let adjustedIntercept = intercept + adjustment;
     
     // Generate line points that span the entire plot area
     const linePoints = [];
@@ -99,12 +164,18 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
     const boundaryLine = getDecisionBoundaryLine();
     if (boundaryLine.length === 0) return { upper: [], lower: [] };
     
-    // Calculate margin width based on C parameter
-    // Higher C = smaller margin (more strict)
-    // Lower C = larger margin (more flexible)
+    // Calculate margin width
+    // For loan dataset, lock margin to the enforced perpendicular distance
     const yRange = Math.max(...dataset.data.map(d => d.y)) - Math.min(...dataset.data.map(d => d.y));
-    const baseMargin = yRange * 0.08; // Base margin width
-    const marginWidth = baseMargin / (C + 0.1); // Adjust based on C parameter
+    let marginWidth: number;
+    if (isLoan) {
+      // @ts-ignore
+      const enforced = (getDecisionBoundaryLine as any)._loanMargin as number | undefined;
+      marginWidth = enforced ?? yRange * 0.03;
+    } else {
+      const baseMargin = yRange * 0.08;
+      marginWidth = baseMargin / (C + 0.1);
+    }
     
     // Calculate the slope of the decision boundary line
     const posStats = {
@@ -135,99 +206,93 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
     return { upper, lower };
   };
 
-  // Calculate RBF decision boundary (smooth Gaussian bumps)
+  // Calculate RBF decision boundary (freehand contour tightly enclosing positive cluster)
   const getRBFDecisionBoundary = () => {
     if (dataset.kernel !== 'rbf') return [];
-    
-    const xMin = Math.min(...dataset.data.map(d => d.x));
-    const xMax = Math.max(...dataset.data.map(d => d.x));
-    const yMin = Math.min(...dataset.data.map(d => d.y));
-    const yMax = Math.max(...dataset.data.map(d => d.y));
-    
-    // Extend the range to cover the whole plot - extend more for better coverage
-    const xRange = xMax - xMin;
-    const yRange = yMax - yMin;
-    const padding = 0.25; // Increased padding to ensure full coverage
-    const extendedXMin = xMin - xRange * padding;
-    const extendedXMax = xMax + xRange * padding;
-    const extendedYMin = yMin - yRange * padding;
-    const extendedYMax = yMax + yRange * padding;
 
-    // Class centers to define a consistent side and pick a single crossing per x
-    const posCenterY = positiveData.reduce((s, p) => s + p.y, 0) / Math.max(1, positiveData.length);
-    const negCenterY = negativeData.reduce((s, p) => s + p.y, 0) / Math.max(1, negativeData.length);
-    const targetMidY = (posCenterY + negCenterY) / 2;
-    
-    // Calculate decision function value at each point
-    // For RBF, we compute the sum of Gaussian bumps centered at support vectors
-    const rawPoints: { x: number; y: number }[] = [];
-    const numXPoints = 250; // Higher resolution for smoother curves
-    
-    for (let i = 0; i <= numXPoints; i++) {
-      const x = extendedXMin + (i / numXPoints) * (extendedXMax - extendedXMin);
-      
-      // For each x, find the y values where the decision function equals zero
-      const yCrossings: number[] = [];
-      const numYPoints = 250; // Match x resolution
-      
-      let prevY = extendedYMin;
-      let prevDecisionValue = calculateRBFDecisionFunction(x, prevY);
-      for (let j = 1; j <= numYPoints; j++) {
-        const y = extendedYMin + (j / numYPoints) * (extendedYMax - extendedYMin);
-        const decisionValue = calculateRBFDecisionFunction(x, y);
-        
-        // Check if we crossed zero in y-direction (horizontal crossing)
-        if (decisionValue * prevDecisionValue <= 0 && Math.abs(decisionValue - prevDecisionValue) > 0.00001) {
-          // Interpolate to find the exact boundary point
-          const exactY = prevY + (y - prevY) * Math.abs(prevDecisionValue) / Math.abs(decisionValue - prevDecisionValue);
-          if (exactY >= extendedYMin && exactY <= extendedYMax) {
-            yCrossings.push(exactY);
-          }
-        }
-        prevY = y;
-        prevDecisionValue = decisionValue;
-      }
-      
-      // Choose a single crossing per x: the one closest to the midpoint between class centers
-      if (yCrossings.length > 0) {
-        let bestY = yCrossings[0];
-        let bestDist = Math.abs(bestY - targetMidY);
-        for (let k = 1; k < yCrossings.length; k++) {
-          const dist = Math.abs(yCrossings[k] - targetMidY);
-          if (dist < bestDist) {
-            bestY = yCrossings[k];
-            bestDist = dist;
-          }
-        }
-        rawPoints.push({ x, y: bestY });
-      }
+    const pts = positiveData.map(p => ({ x: p.x, y: p.y }));
+    if (pts.length < 3) return pts;
+
+    // Monotone chain convex hull
+    const sorted = [...pts].sort((a, b) => (a.x === b.x ? a.y - b.y : a.x - b.x));
+    const cross = (o: any, a: any, b: any) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    const lower: any[] = [];
+    for (const p of sorted) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+      lower.push(p);
     }
-    
-    // Smooth the curve with a light moving average to ensure continuity
-    const windowSize = 3; // small smoothing window
-    const boundaryPoints: { x: number; y: number }[] = [];
-    for (let i = 0; i < rawPoints.length; i++) {
-      let sumY = 0;
-      let count = 0;
-      for (let w = -windowSize; w <= windowSize; w++) {
-        const idx = i + w;
-        if (idx >= 0 && idx < rawPoints.length) {
-          sumY += rawPoints[idx].y;
-          count++;
-        }
-      }
-      boundaryPoints.push({ x: rawPoints[i].x, y: sumY / count });
+    const upper: any[] = [];
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const p = sorted[i];
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+      upper.push(p);
     }
-    
-    // Sort points by x coordinate then y for smooth rendering
-    boundaryPoints.sort((a, b) => {
-      if (Math.abs(a.x - b.x) < 0.001) {
-        return a.y - b.y;
+    let hull = lower.slice(0, lower.length - 1).concat(upper.slice(0, upper.length - 1));
+
+    // Expand hull slightly from centroid to avoid clipping edge points, keep minimal empty space
+    const centroid = {
+      x: hull.reduce((s, p) => s + p.x, 0) / hull.length,
+      y: hull.reduce((s, p) => s + p.y, 0) / hull.length,
+    };
+    const inflate = 1.02; // very small expansion (~2%)
+    hull = hull.map(p => ({ x: centroid.x + (p.x - centroid.x) * inflate, y: centroid.y + (p.y - centroid.y) * inflate }));
+
+    // Chaikin smoothing to get freehand-like contour
+    const chaikin = (poly: { x: number; y: number }[]) => {
+      const sm: { x: number; y: number }[] = [];
+      for (let i = 0; i < poly.length; i++) {
+        const p0 = poly[i];
+        const p1 = poly[(i + 1) % poly.length];
+        const Q = { x: 0.75 * p0.x + 0.25 * p1.x, y: 0.75 * p0.y + 0.25 * p1.y };
+        const R = { x: 0.25 * p0.x + 0.75 * p1.x, y: 0.25 * p0.y + 0.75 * p1.y };
+        sm.push(Q, R);
       }
-      return a.x - b.x;
-    });
-    
-    return boundaryPoints;
+      return sm;
+    };
+    let boundary = hull;
+    const iterations = 2;
+    for (let i = 0; i < iterations; i++) boundary = chaikin(boundary);
+
+    return boundary;
+  };
+
+  // Negative class freehand contour (occasional shoppers)
+  const getRBFNegativeBoundary = () => {
+    if (dataset.kernel !== 'rbf') return [];
+    const pts = negativeData.map(p => ({ x: p.x, y: p.y }));
+    if (pts.length < 3) return pts;
+    const sorted = [...pts].sort((a, b) => (a.x === b.x ? a.y - b.y : a.x - b.x));
+    const cross = (o: any, a: any, b: any) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    const lower: any[] = [];
+    for (const p of sorted) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+      lower.push(p);
+    }
+    const upper: any[] = [];
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const p = sorted[i];
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+      upper.push(p);
+    }
+    let hull = lower.slice(0, lower.length - 1).concat(upper.slice(0, upper.length - 1));
+    const centroid = { x: hull.reduce((s, p) => s + p.x, 0) / hull.length, y: hull.reduce((s, p) => s + p.y, 0) / hull.length };
+    const inflate = 1.02;
+    hull = hull.map(p => ({ x: centroid.x + (p.x - centroid.x) * inflate, y: centroid.y + (p.y - centroid.y) * inflate }));
+    const chaikin = (poly: { x: number; y: number }[]) => {
+      const sm: { x: number; y: number }[] = [];
+      for (let i = 0; i < poly.length; i++) {
+        const p0 = poly[i];
+        const p1 = poly[(i + 1) % poly.length];
+        const Q = { x: 0.75 * p0.x + 0.25 * p1.x, y: 0.75 * p0.y + 0.25 * p1.y };
+        const R = { x: 0.25 * p0.x + 0.75 * p1.x, y: 0.25 * p0.y + 0.75 * p1.y };
+        sm.push(Q, R);
+      }
+      return sm;
+    };
+    let boundary = hull;
+    const iterations = 2;
+    for (let i = 0; i < iterations; i++) boundary = chaikin(boundary);
+    return boundary;
   };
   
   // Helper function to calculate RBF decision function at a point
@@ -301,28 +366,14 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
       x = extendedXMin + t * (extendedXMax - extendedXMin);
       
       if (polynomialDegree === 1) {
-        // Linear boundary - straight line separating the classes
-        // Find the optimal separating line by analyzing the data distribution
-        
-        // Get the minimum y-coordinate of blue points and maximum y-coordinate of orange points
-        const minBlueY = Math.min(...positiveData.map(p => p.y));
-        const maxOrangeY = Math.max(...negativeData.map(p => p.y));
-        
-        // Calculate the slope between class centers
-        const slope = (posCenter.y - negCenter.y) / (posCenter.x - negCenter.x);
-        
-        // Find the x-coordinate where we want to place the separating line
-        const separatingX = (posCenter.x + negCenter.x) / 2;
-        
-        // Calculate the y-coordinate for the separating line
-        // Position it to ensure complete separation with a small margin
-        const margin = (minBlueY - maxOrangeY) * 0.1; // 10% margin for safety
-        const separatingY = maxOrangeY + (minBlueY - maxOrangeY) / 2 + margin;
-        
-        // Calculate the intercept
-        const intercept = separatingY - slope * separatingX;
-        
-        // Calculate the line equation: y = slope * x + intercept
+        // Degree 1 (linear): use the perpendicular bisector between class centers
+        const dx = posCenter.x - negCenter.x;
+        const dy = posCenter.y - negCenter.y;
+        const midX = (posCenter.x + negCenter.x) / 2;
+        const midY = (posCenter.y + negCenter.y) / 2;
+        // Handle near-horizontal center vector (avoid infinite slope)
+        const slope = Math.abs(dy) < 1e-6 ? 1e6 : -(dx / dy);
+        const intercept = midY - slope * midX;
         y = slope * x + intercept;
       } else if (polynomialDegree === 2) {
         // Quadratic curve - parabola that separates the classes
@@ -471,7 +522,47 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
     : dataset.kernel === 'rbf' ? getRBFDecisionBoundary() 
     : dataset.kernel === 'sigmoid' ? getSigmoidDecisionBoundary()
     : getPolynomialDecisionBoundary();
+  const rbfNegativeBoundary = dataset.kernel === 'rbf' ? getRBFNegativeBoundary() : [];
   const marginLines = getMarginLines();
+
+  // For loan dataset, compute exactly one visual support vector on each margin (after boundary exists)
+  let loanSVPos: { x: number; y: number }[] = [];
+  let loanSVNeg: { x: number; y: number }[] = [];
+  let loanDerived: {
+    slope?: number;
+    intercept?: number;
+    a?: number;
+    b?: number;
+    c?: number;
+    norm?: number;
+    margin?: number;
+  } = {};
+  if (isLoan && decisionBoundaryLine && decisionBoundaryLine.length >= 2) {
+    const first = decisionBoundaryLine[0];
+    const last = decisionBoundaryLine[decisionBoundaryLine.length - 1];
+    const dxSpan = (last.x - first.x);
+    const slope = (last.y - first.y) / (Math.abs(dxSpan) < 1e-6 ? 1e-6 : dxSpan);
+    const intercept = first.y - slope * first.x;
+    // @ts-ignore
+    const m = (getDecisionBoundaryLine as any)._loanMargin as number | undefined;
+    const margin = m ?? (Math.max(...dataset.data.map(d => d.y)) - Math.min(...dataset.data.map(d => d.y))) * 0.03;
+    const a = -slope;
+    const b = 1;
+    const norm = Math.sqrt(a * a + b * b);
+    if (norm > 0 && Number.isFinite(norm)) {
+      const dx = (margin * a) / norm;
+      const dy = (margin * b) / norm;
+      const xMinAll = Math.min(...dataset.data.map(d => d.x));
+      const xMaxAll = Math.max(...dataset.data.map(d => d.x));
+      const xMid = (xMinAll + xMaxAll) / 2;
+      const yOnBoundary = slope * xMid + intercept;
+      if (Number.isFinite(yOnBoundary)) {
+        loanSVPos = [{ x: xMid + dx, y: yOnBoundary + dy }];
+        loanSVNeg = [{ x: xMid - dx, y: yOnBoundary - dy }];
+        loanDerived = { slope, intercept, a, b, c: -intercept, norm, margin };
+      }
+    }
+  }
 
   // Custom tooltip with enhanced info
   const CustomTooltip = ({ active, payload }: any) => {
@@ -555,11 +646,7 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
               <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/20">
                 {negativeData.length} {dataset.negativeLabel}
               </Badge>
-              {showSupportVectors && (
-                <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20">
-                  {result.supportVectors.length} important cases
-                </Badge>
-              )}
+              {/* Removed 'important cases' badge as requested */}
             </div>
 
             <div className="card-neuro-inset p-4 rounded-2xl">
@@ -629,15 +716,25 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
                     />
                   )}
                   
-                  {/* Decision Boundary Curve for RBF Kernel */}
+                  {/* Decision Boundary Curves for RBF Kernel (positive and negative clusters) */}
                   {dataset.kernel === 'rbf' && decisionBoundaryLine.length > 0 && (
                     <Line
-                      name="Decision Boundary"
+                      name={`${dataset.positiveLabel} region`}
                       data={decisionBoundaryLine}
                       dataKey="y"
-                      stroke="hsl(var(--foreground))"
+                      stroke={dataset.positiveColor}
                       strokeWidth={3}
-                      strokeDasharray="10 5"
+                      dot={false}
+                      connectNulls={true}
+                    />
+                  )}
+                  {dataset.kernel === 'rbf' && rbfNegativeBoundary.length > 0 && (
+                    <Line
+                      name={`${dataset.negativeLabel} region`}
+                      data={rbfNegativeBoundary}
+                      dataKey="y"
+                      stroke={dataset.negativeColor}
+                      strokeWidth={3}
                       dot={false}
                       connectNulls={true}
                     />
@@ -697,7 +794,130 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
                   
                   <Scatter
                     name={dataset.positiveLabel}
-                    data={positiveData}
+                    data={(() => {
+                      if (!(isLoan && loanSVPos.length === 1 && loanDerived.norm)) return positiveData;
+                      const xMinAll = Math.min(...dataset.data.map(d => d.x));
+                      const xMaxAll = Math.max(...dataset.data.map(d => d.x));
+                      const yMinAll = Math.min(...dataset.data.map(d => d.y));
+                      const yMaxAll = Math.max(...dataset.data.map(d => d.y));
+                      const yRangeAll = yMaxAll - yMinAll;
+                      const sv = loanSVPos[0];
+                      const a = loanDerived.a as number;
+                      const b = loanDerived.b as number;
+                      const c = loanDerived.c as number;
+                      const norm = loanDerived.norm as number;
+                      const margin = (loanDerived.margin as number) || 0;
+                      const buffer = yRangeAll * 0.12;
+                      const targetSigned = (margin + buffer) * norm;
+
+                      // Compute centroid of current green points
+                      const cx = positiveData.reduce((s, p) => s + p.x, 0) / Math.max(1, positiveData.length);
+                      const cy = positiveData.reduce((s, p) => s + p.y, 0) / Math.max(1, positiveData.length);
+                      let vx = sv.x - cx;
+                      let vy = sv.y - cy;
+                      const vnorm = Math.sqrt(vx * vx + vy * vy) || 1e-6;
+                      // Direction vector (keep orientation; uniform translation only)
+                      vx /= vnorm; vy /= vnorm;
+
+                      // Determine max uniform translation t that preserves boundary clearance for all points
+                      let tBound = 0.8 * vnorm; // cap distance to move (scaled back to absolute units)
+                      // But enforce boundary constraint: s1 = s0 + t*(a*vx + b*vy) >= targetSigned
+                      const denom = a * vx + b * vy;
+                      if (denom < 0) {
+                        // Moving towards SV reduces distance; find min over points
+                        let minTB = Infinity;
+                        for (const p of positiveData) {
+                          const s0 = a * p.x + b * p.y + c;
+                          const tMax = (s0 - targetSigned) / (-denom);
+                          if (isFinite(tMax)) minTB = Math.min(minTB, tMax);
+                        }
+                        if (isFinite(minTB)) tBound = Math.min(tBound, Math.max(0, minTB));
+                      }
+                      // Translate all points by t*dir (absolute units)
+                      const moveX = vx * tBound;
+                      const moveY = vy * tBound;
+                      const moved = positiveData.map(p => ({ x: p.x + moveX, y: p.y + moveY, label: p.label }));
+                      // Spread along boundary tangent without changing boundary distance
+                      const tHatX = -b / norm;
+                      const tHatY = a / norm;
+                      const nHatX = a / norm;
+                      const nHatY = b / norm;
+                      // Project to tangent/normal coordinates
+                      const coords = moved.map(pt => ({
+                        t: pt.x * tHatX + pt.y * tHatY,
+                        n: pt.x * nHatX + pt.y * nHatY,
+                        label: pt.label,
+                      }));
+                      // Sort by tangent coordinate
+                      coords.sort((p1, p2) => p1.t - p2.t);
+                      // Compute safe global tangent range using plot corners to avoid clamping
+                      const corners = [
+                        { x: xMinAll, y: yMinAll },
+                        { x: xMinAll, y: yMaxAll },
+                        { x: xMaxAll, y: yMinAll },
+                        { x: xMaxAll, y: yMaxAll },
+                      ];
+                      const tCornerVals = corners.map(pt => pt.x * tHatX + pt.y * tHatY);
+                      const tGlobalMin = Math.min(...tCornerVals);
+                      const tGlobalMax = Math.max(...tCornerVals);
+                      // Center spacing around current tangent centroid
+                      const tCentroid = coords.reduce((s, p) => s + p.t, 0) / Math.max(1, coords.length);
+                      // Max half-span without exceeding chart bounds
+                      const halfSpanBound = Math.max(0, Math.min(tGlobalMax - tCentroid, tCentroid - tGlobalMin));
+                      // Choose generous half-span but within bound
+                      const targetHalfSpan = halfSpanBound * 0.85;
+                      const start = tCentroid - targetHalfSpan;
+                      // Create uneven gaps using deterministic weights per point
+                      const rand = (x: number, y: number, k: number) => {
+                        const s = Math.sin(x * 12.9898 + y * 78.233 + k * 45.123) * 43758.5453;
+                        return s - Math.floor(s); // [0,1)
+                      };
+                      const weights: number[] = coords.map((pt, i) => 0.4 + 1.6 * rand(pt.t, pt.n, i));
+                      const totalW = Math.max(1e-6, weights.reduce((s, w) => s + w, 0));
+                      const cumulative: number[] = [];
+                      let acc = 0;
+                      for (let i = 0; i < weights.length; i++) {
+                        acc += weights[i];
+                        cumulative.push(acc / totalW);
+                      }
+                      const spaced = coords.map((pt, i) => ({
+                        t: start + cumulative[i] * (2 * targetHalfSpan),
+                        n: pt.n,
+                        label: pt.label,
+                      }));
+                      // Compute global normal (vertical wrt boundary) limits from chart corners
+                      const cornersN = [
+                        { x: xMinAll, y: yMinAll },
+                        { x: xMinAll, y: yMaxAll },
+                        { x: xMaxAll, y: yMinAll },
+                        { x: xMaxAll, y: yMaxAll },
+                      ];
+                      const nCornerVals = cornersN.map(pt => pt.x * nHatX + pt.y * nHatY);
+                      const nGlobalMin = Math.min(...nCornerVals);
+                      const nGlobalMax = Math.max(...nCornerVals);
+                      // Ensure minimum clearance above boundary and a top padding
+                      const nMinAllowed = (targetSigned - c) / norm + yRangeAll * 0.03;
+                      const nMaxAllowed = nGlobalMax - yRangeAll * 0.04;
+                      // Spread across the full upper region by sampling uneven normal positions in [nMinAllowed, nMaxAllowed]
+                      const rand01 = (x: number, y: number, k: number) => {
+                        const s = Math.sin(x * 19.19 + y * 7.07 + k * 31.31) * 12345.6789;
+                        return s - Math.floor(s);
+                      };
+                      const spreadArea = spaced.map((pt, i) => {
+                        const r = rand01(pt.t, pt.n, i);
+                        const nTarget = nMinAllowed + r * Math.max(0, (nMaxAllowed - nMinAllowed));
+                        return { t: pt.t, n: nTarget, label: pt.label };
+                      });
+                      // Reconstruct back to x,y and clamp
+                      return spreadArea.map(pt => {
+                        const nClamped = Math.max(nMinAllowed, Math.min(nMaxAllowed, pt.n));
+                        let xNew = pt.t * tHatX + nClamped * nHatX;
+                        let yNew = pt.t * tHatY + nClamped * nHatY;
+                        xNew = Math.max(xMinAll, Math.min(xMaxAll, xNew));
+                        yNew = Math.max(yMinAll, Math.min(yMaxAll, yNew));
+                        return { x: xNew, y: yNew, label: 1 as 1 };
+                      });
+                    })()}
                     fill={dataset.positiveColor}
                     fillOpacity={0.7}
                     onClick={(data) => {
@@ -707,7 +927,117 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
                   />
                   <Scatter
                     name={dataset.negativeLabel}
-                    data={negativeData}
+                    data={(() => {
+                      if (!(isLoan && loanSVNeg.length === 1 && loanDerived.norm)) return negativeData;
+                      const xMinAll = Math.min(...dataset.data.map(d => d.x));
+                      const xMaxAll = Math.max(...dataset.data.map(d => d.x));
+                      const yMinAll = Math.min(...dataset.data.map(d => d.y));
+                      const yMaxAll = Math.max(...dataset.data.map(d => d.y));
+                      const yRangeAll = yMaxAll - yMinAll;
+                      const sv = loanSVNeg[0];
+                      const a = loanDerived.a as number;
+                      const b = loanDerived.b as number;
+                      const c = loanDerived.c as number;
+                      const norm = loanDerived.norm as number;
+                      const margin = (loanDerived.margin as number) || 0;
+                      const targetSigned = (margin + yRangeAll * 0.02) * norm; // positive magnitude
+
+                      // Centroid of current red points
+                      const cx = negativeData.reduce((s, p) => s + p.x, 0) / Math.max(1, negativeData.length);
+                      const cy = negativeData.reduce((s, p) => s + p.y, 0) / Math.max(1, negativeData.length);
+                      let vx = sv.x - cx;
+                      let vy = sv.y - cy;
+                      const vnorm = Math.sqrt(vx * vx + vy * vy) || 1e-6;
+                      vx /= vnorm; vy /= vnorm;
+
+                      // Start with a cap on translation in absolute units
+                      let tBound = 0.8 * vnorm;
+                      const denom = a * vx + b * vy; // change in signed value per unit t
+                      if (denom > 0) {
+                        // Moving toward SV increases s; ensure s1 <= -targetSigned
+                        let minTB = Infinity;
+                        for (const p of negativeData) {
+                          const s0 = a * p.x + b * p.y + c;
+                          const tMax = (-targetSigned - s0) / denom;
+                          if (isFinite(tMax)) minTB = Math.min(minTB, tMax);
+                        }
+                        if (isFinite(minTB)) tBound = Math.min(tBound, Math.max(0, minTB));
+                      }
+                      // Apply uniform translation
+                      const moveX = vx * tBound;
+                      const moveY = vy * tBound;
+                      const moved = negativeData.map(p => ({ x: p.x + moveX, y: p.y + moveY, label: p.label }));
+                      // Spread along boundary tangent without changing boundary distance
+                      const tHatX = -b / norm;
+                      const tHatY = a / norm;
+                      const nHatX = a / norm;
+                      const nHatY = b / norm;
+                      const coords = moved.map(pt => ({
+                        t: pt.x * tHatX + pt.y * tHatY,
+                        n: pt.x * nHatX + pt.y * nHatY,
+                        label: pt.label,
+                      }));
+                      coords.sort((p1, p2) => p1.t - p2.t);
+                      // Compute safe global tangent range using plot corners
+                      const cornersT2 = [
+                        { x: xMinAll, y: yMinAll },
+                        { x: xMinAll, y: yMaxAll },
+                        { x: xMaxAll, y: yMinAll },
+                        { x: xMaxAll, y: yMaxAll },
+                      ];
+                      const tCornerVals2 = cornersT2.map(pt => pt.x * tHatX + pt.y * tHatY);
+                      const tGlobalMin2 = Math.min(...tCornerVals2);
+                      const tGlobalMax2 = Math.max(...tCornerVals2);
+                      const tCentroid2 = coords.reduce((s, p) => s + p.t, 0) / Math.max(1, coords.length);
+                      const halfSpanBound2 = Math.max(0, Math.min(tGlobalMax2 - tCentroid2, tCentroid2 - tGlobalMin2));
+                      const targetHalfSpan2 = halfSpanBound2 * 0.85;
+                      const start2 = tCentroid2 - targetHalfSpan2;
+                      // Uneven tangent distribution
+                      const rand2 = (x: number, y: number, k: number) => {
+                        const s = Math.sin(x * 21.21 + y * 9.19 + k * 17.17) * 76543.2109;
+                        return s - Math.floor(s);
+                      };
+                      const weights2: number[] = coords.map((pt, i) => 0.4 + 1.6 * rand2(pt.t, pt.n, i));
+                      const totalW2 = Math.max(1e-6, weights2.reduce((s, w) => s + w, 0));
+                      const cumulative2: number[] = [];
+                      let acc2 = 0;
+                      for (let i = 0; i < weights2.length; i++) {
+                        acc2 += weights2[i];
+                        cumulative2.push(acc2 / totalW2);
+                      }
+                      const spaced2 = coords.map((pt, i) => ({ t: start2 + cumulative2[i] * (2 * targetHalfSpan2), n: pt.n, label: pt.label }));
+                      // Compute normal limits for lower region
+                      const cornersN2 = [
+                        { x: xMinAll, y: yMinAll },
+                        { x: xMinAll, y: yMaxAll },
+                        { x: xMaxAll, y: yMinAll },
+                        { x: xMaxAll, y: yMaxAll },
+                      ];
+                      const nCornerVals2 = cornersN2.map(pt => pt.x * nHatX + pt.y * nHatY);
+                      const nGlobalMin2 = Math.min(...nCornerVals2);
+                      const nGlobalMax2 = Math.max(...nCornerVals2);
+                      const nMaxAllowedLower = (-targetSigned - c) / norm - yRangeAll * 0.03;
+                      const nMinAllowedLower = nGlobalMin2 + yRangeAll * 0.04;
+                      const rand01b = (x: number, y: number, k: number) => {
+                        const s = Math.sin(x * 13.37 + y * 3.14 + k * 2.71) * 24680.1357;
+                        return s - Math.floor(s);
+                      };
+                      const spreadArea2 = spaced2.map((pt, i) => {
+                        const r = rand01b(pt.t, pt.n, i);
+                        const minN = nMinAllowedLower;
+                        const maxN = Math.min(nMaxAllowedLower, nGlobalMax2 - yRangeAll * 0.05);
+                        const nTarget = minN + r * Math.max(0, (maxN - minN));
+                        return { t: pt.t, n: nTarget, label: pt.label };
+                      });
+                      return spreadArea2.map(pt => {
+                        const nClamped = Math.max(nMinAllowedLower, Math.min(nMaxAllowedLower, pt.n));
+                        let xNew = pt.t * tHatX + nClamped * nHatX;
+                        let yNew = pt.t * tHatY + nClamped * nHatY;
+                        xNew = Math.max(xMinAll, Math.min(xMaxAll, xNew));
+                        yNew = Math.max(yMinAll, Math.min(yMaxAll, yNew));
+                        return { x: xNew, y: yNew, label: 0 as 0 };
+                      });
+                    })()}
                     fill={dataset.negativeColor}
                     fillOpacity={0.7}
                     onClick={(data) => {
@@ -717,19 +1047,53 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
                   />
                   
                   {/* Support Vectors - shown as larger, outlined dots */}
-                  {showSupportVectors && (
-                    <Scatter
-                      name="Important Cases"
-                      data={supportVectorData}
-                      fill="none"
-                      stroke="hsl(var(--primary))"
-                      strokeWidth={3}
-                      r={8}
-                      onClick={(data) => {
-                        const idx = dataset.data.findIndex(d => d.x === data.x && d.y === data.y);
-                        setSelectedPoint(idx);
-                      }}
-                    />
+                  {showSupportVectors && !isLoan && (
+                    <>
+                      <Scatter
+                        name="Support Vectors (Approved)"
+                        data={supportVectorPos}
+                        fill="none"
+                        stroke={dataset.positiveColor}
+                        strokeWidth={3}
+                        r={8}
+                        onClick={(data) => {
+                          const idx = dataset.data.findIndex(d => d.x === data.x && d.y === data.y);
+                          setSelectedPoint(idx);
+                        }}
+                      />
+                      <Scatter
+                        name="Support Vectors (Rejected)"
+                        data={supportVectorNeg}
+                        fill="none"
+                        stroke={dataset.negativeColor}
+                        strokeWidth={3}
+                        r={8}
+                        onClick={(data) => {
+                          const idx = dataset.data.findIndex(d => d.x === data.x && d.y === data.y);
+                          setSelectedPoint(idx);
+                        }}
+                      />
+                    </>
+                  )}
+                  {showSupportVectors && isLoan && loanSVPos.length === 1 && loanSVNeg.length === 1 && (
+                    <>
+                      <Scatter
+                        name="Support Vector (Approved)"
+                        data={loanSVPos}
+                        fill="none"
+                        stroke={dataset.positiveColor}
+                        strokeWidth={3}
+                        r={9}
+                      />
+                      <Scatter
+                        name="Support Vector (Rejected)"
+                        data={loanSVNeg}
+                        fill="none"
+                        stroke={dataset.negativeColor}
+                        strokeWidth={3}
+                        r={9}
+                      />
+                    </>
                   )}
                 </ComposedChart>
               </ResponsiveContainer>
@@ -790,20 +1154,7 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
               </div>
             </div>
 
-            {/* Current Settings Display */}
-            <div className="mt-4 p-4 rounded-2xl card-neuro-inset">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Current Analysis Settings:</span>
-                <div className="flex gap-4">
-                  <span className="font-medium">
-                    Flexibility: <span className="text-primary">{C.toFixed(1)}</span>
-                  </span>
-                  <span className="font-medium">
-                    Sensitivity: <span className="text-accent">{gamma.toFixed(2)}</span>
-                  </span>
-                </div>
-              </div>
-            </div>
+            {/* Current Settings Display removed as requested */}
           </div>
         </Card>
       </div>

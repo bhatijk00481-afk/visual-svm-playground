@@ -3,7 +3,6 @@ import { Hero } from "@/components/Hero";
 import { DatasetSelector } from "@/components/DatasetSelector";
 import { DatasetOverview } from "@/components/DatasetOverview";
 import { SVMVisualization } from "@/components/SVMVisualization";
-import { ParameterControls } from "@/components/ParameterControls";
 import { ModelSummary } from "@/components/ModelSummary";
 import { UnderstandingCards } from "@/components/UnderstandingCards";
 import { ControlPanel } from "@/components/ControlPanel";
@@ -76,12 +75,7 @@ const Index = () => {
             result={svmResult}
           />
 
-          <ParameterControls 
-            C={C}
-            gamma={gamma}
-            onCChange={setC}
-            onGammaChange={setGamma}
-          />
+          {/* ParameterControls removed as requested */}
 
           <UnderstandingCards
             dataset={selectedDataset}

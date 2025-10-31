@@ -31,23 +31,55 @@ export interface Dataset {
 function generateLinearData(): DataPoint[] {
   const data: DataPoint[] = [];
   
-  // Approved loans (higher income, better credit)
-  for (let i = 0; i < 60; i++) {
-    data.push({
-      x: 40000 + Math.random() * 60000, // Income: 40k-100k
-      y: 650 + Math.random() * 200, // Credit: 650-850
-      label: 1
-    });
-  }
-  
-  // Rejected loans (lower income, worse credit)
-  for (let i = 0; i < 40; i++) {
-    data.push({
-      x: 15000 + Math.random() * 35000, // Income: 15k-50k
-      y: 400 + Math.random() * 200, // Credit: 400-600
-      label: 0
-    });
-  }
+  // Rejected loans (bottom-left) bounds
+  const negIncomeMin = 10000;  // 10k
+  const negIncomeMax = 38000;  // 38k
+  const negCreditMin = 320;    // 320
+  const negCreditMax = 560;    // 560
+
+  // Approved loans (top-right) bounds
+  const posIncomeMin = 90000;  // 90k
+  const posIncomeMax = 125000; // 125k
+  const posCreditMin = 780;    // 780
+  const posCreditMax = 930;    // 930
+
+  const makeJitteredGrid = (
+    xMin: number,
+    xMax: number,
+    yMin: number,
+    yMax: number,
+    count: number
+  ): { x: number; y: number }[] => {
+    const result: { x: number; y: number }[] = [];
+    const width = xMax - xMin;
+    const height = yMax - yMin;
+    const aspect = width / Math.max(1, height);
+    const cols = Math.ceil(Math.sqrt(count * aspect));
+    const rows = Math.ceil(count / Math.max(1, cols));
+    const dx = width / cols;
+    const dy = height / rows;
+    let placed = 0;
+    for (let r = 0; r < rows && placed < count; r++) {
+      for (let c = 0; c < cols && placed < count; c++) {
+        const cx = xMin + (c + 0.5) * dx;
+        const cy = yMin + (r + 0.5) * dy;
+        const jx = (Math.random() - 0.5) * dx * 0.4; // lower jitter to keep spacing
+        const jy = (Math.random() - 0.5) * dy * 0.4;
+        const x = Math.min(xMax - dx * 0.15, Math.max(xMin + dx * 0.15, cx + jx));
+        const y = Math.min(yMax - dy * 0.15, Math.max(yMin + dy * 0.15, cy + jy));
+        result.push({ x, y });
+        placed++;
+      }
+    }
+    return result.slice(0, count);
+  };
+
+  const posPoints = makeJitteredGrid(posIncomeMin, posIncomeMax, posCreditMin, posCreditMax, 60)
+    .map(p => ({ x: p.x, y: p.y, label: 1 as 1 }));
+  const negPoints = makeJitteredGrid(negIncomeMin, negIncomeMax, negCreditMin, negCreditMax, 40)
+    .map(p => ({ x: p.x, y: p.y, label: 0 as 0 }));
+
+  data.push(...posPoints, ...negPoints);
   
   return data;
 }
@@ -85,30 +117,47 @@ function generatePolynomialData(): DataPoint[] {
 function generateRBFData(): DataPoint[] {
   const data: DataPoint[] = [];
   
-  // Loyal customers (frequent, high spend - forms clusters)
-  const centers = [
-    { x: 20, y: 80 },
-    { x: 25, y: 100 },
-    { x: 18, y: 120 }
-  ];
-  
-  centers.forEach(center => {
-    for (let i = 0; i < 20; i++) {
-      data.push({
-        x: center.x + (Math.random() - 0.5) * 10,
-        y: center.y + (Math.random() - 0.5) * 30,
-        label: 1
-      });
+  // Loyal customers (slightly larger compact cluster)
+  const center = { x: 22, y: 95 };
+  const rx = 5;   // widen a bit
+  const ry = 9;   // taller a bit
+  for (let i = 0; i < 60; i++) {
+    // Rejection sample to ensure points stay within ellipse boundary
+    let px = 0; let py = 0; let ok = false; let guard = 0;
+    while (!ok && guard < 100) {
+      const angle = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()); // denser near center
+      px = center.x + Math.cos(angle) * rx * r + (Math.random() - 0.5) * 0.6; // tiny jitter
+      py = center.y + Math.sin(angle) * ry * r + (Math.random() - 0.5) * 0.8; // tiny jitter
+      const nx = (px - center.x) / rx;
+      const ny = (py - center.y) / ry;
+      ok = nx * nx + ny * ny <= 1.0; // inside ellipse
+      guard++;
     }
-  });
+    data.push({ x: px, y: py, label: 1 });
+  }
   
-  // Occasional shoppers (spread out, lower frequency/spend)
-  for (let i = 0; i < 40; i++) {
-    data.push({
-      x: 2 + Math.random() * 15,
-      y: 20 + Math.random() * 60,
-      label: 0
-    });
+  // Occasional shoppers (their own compact cluster, separate from loyal)
+  const centerNeg = { x: 10, y: 50 };
+  const rxNeg = 6;
+  const ryNeg = 8;
+  for (let i = 0; i < 50; i++) {
+    let qx = 0; let qy = 0; let ok = false; let guard = 0;
+    while (!ok && guard < 100) {
+      const angle = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random());
+      qx = centerNeg.x + Math.cos(angle) * rxNeg * r + (Math.random() - 0.5) * 0.8;
+      qy = centerNeg.y + Math.sin(angle) * ryNeg * r + (Math.random() - 0.5) * 1.0;
+      const nx = (qx - centerNeg.x) / rxNeg;
+      const ny = (qy - centerNeg.y) / ryNeg;
+      ok = nx * nx + ny * ny <= 1.0;
+      // keep well outside loyal ellipse too
+      const lx = (qx - center.x) / (rx * 1.1);
+      const ly = (qy - center.y) / (ry * 1.1);
+      if (lx * lx + ly * ly <= 1.0) ok = false;
+      guard++;
+    }
+    data.push({ x: qx, y: qy, label: 0 });
   }
   
   return data;
@@ -145,7 +194,7 @@ function generateSigmoidData(): DataPoint[] {
 export const datasets: Dataset[] = [
   {
     id: 'loan',
-    name: 'Loan Approval Predictor',
+    name: 'Loan Approval Dataset',
     icon: '🏦',
     description: 'Bank deciding which loans to approve',
     scenario: 'Banking professionals analyzing loan approvals',

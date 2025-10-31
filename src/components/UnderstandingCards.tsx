@@ -110,6 +110,54 @@ export const UnderstandingCards = ({ dataset, result, C, gamma }: UnderstandingC
             </div>
           </Card>
 
+          {/* Card 3.5: Hard vs Soft Margin */}
+          <Card className="card-neuro p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-3 rounded-full bg-primary/10">
+                <TrendingUp className="w-6 h-6 text-primary" />
+              </div>
+              <h4 className="text-xl font-semibold text-foreground">Hard Margin vs Soft Margin</h4>
+            </div>
+
+            <div className="space-y-3 text-muted-foreground">
+              <p className="leading-relaxed">Two simple ways to draw the separating line:</p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="p-4 rounded-xl bg-primary/5">
+                  <div className="font-semibold text-foreground mb-2">💪 Hard Margin</div>
+                  <ul className="list-disc list-inside text-sm space-y-1">
+                    <li>You must draw a line so that every blue dot is on one side and every red dot is on the other.</li>
+                    <li>No mistakes allowed!</li>
+                    <li>Works only if the dots are perfectly separable — there’s a clear gap between them.</li>
+                    <li>The line will be tight and rigid because it can’t make exceptions.</li>
+                  </ul>
+                  <div className="mt-2 text-xs italic text-muted-foreground">
+                    🧩 Example: A strict teacher who insists everyone stays perfectly in line — no one can step out, even a little.
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-accent/5">
+                  <div className="font-semibold text-foreground mb-2">🤸 Soft Margin</div>
+                  <ul className="list-disc list-inside text-sm space-y-1">
+                    <li>You can draw a line that mostly separates the dots, but a few small mistakes are OK.</li>
+                    <li>The goal is a good overall split while staying flexible.</li>
+                    <li>Works better when the data is a bit messy or overlapping.</li>
+                  </ul>
+                  <div className="mt-2 text-xs italic text-muted-foreground">
+                    🧩 Example: A more understanding teacher — a few students can step out of line if it keeps the group organized overall.
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl card-neuro-inset text-sm">
+                <strong className="text-foreground">Tip:</strong>
+                <span className="ml-1">
+                  The <strong>C</strong> slider adjusts strictness — higher C feels like hard margin (stricter), lower C feels like soft margin (more forgiving).
+                </span>
+              </div>
+            </div>
+          </Card>
+
           {/* Card 4: Your Current Settings */}
           <Card className="card-neuro p-6 space-y-4">
             <div className="flex items-center gap-3">
