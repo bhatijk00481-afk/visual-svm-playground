@@ -24,7 +24,9 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
   const negativeData = dataset.data.filter(d => d.label === 0);
   
   // Get support vectors
-  const supportVectorData = result.supportVectors.map(idx => dataset.data[idx]);
+  const supportVectorData = dataset.kernel === 'sigmoid'
+    ? result.supportVectors.map(idx => dataset.data[idx]).filter(p => p.label === 1)
+    : result.supportVectors.map(idx => dataset.data[idx]);
 
   // Calculate decision boundary line for linear kernel
   const getDecisionBoundaryLine = () => {
@@ -133,6 +135,133 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
     return { upper, lower };
   };
 
+  // Calculate RBF decision boundary (smooth Gaussian bumps)
+  const getRBFDecisionBoundary = () => {
+    if (dataset.kernel !== 'rbf') return [];
+    
+    const xMin = Math.min(...dataset.data.map(d => d.x));
+    const xMax = Math.max(...dataset.data.map(d => d.x));
+    const yMin = Math.min(...dataset.data.map(d => d.y));
+    const yMax = Math.max(...dataset.data.map(d => d.y));
+    
+    // Extend the range to cover the whole plot - extend more for better coverage
+    const xRange = xMax - xMin;
+    const yRange = yMax - yMin;
+    const padding = 0.25; // Increased padding to ensure full coverage
+    const extendedXMin = xMin - xRange * padding;
+    const extendedXMax = xMax + xRange * padding;
+    const extendedYMin = yMin - yRange * padding;
+    const extendedYMax = yMax + yRange * padding;
+
+    // Class centers to define a consistent side and pick a single crossing per x
+    const posCenterY = positiveData.reduce((s, p) => s + p.y, 0) / Math.max(1, positiveData.length);
+    const negCenterY = negativeData.reduce((s, p) => s + p.y, 0) / Math.max(1, negativeData.length);
+    const targetMidY = (posCenterY + negCenterY) / 2;
+    
+    // Calculate decision function value at each point
+    // For RBF, we compute the sum of Gaussian bumps centered at support vectors
+    const rawPoints: { x: number; y: number }[] = [];
+    const numXPoints = 250; // Higher resolution for smoother curves
+    
+    for (let i = 0; i <= numXPoints; i++) {
+      const x = extendedXMin + (i / numXPoints) * (extendedXMax - extendedXMin);
+      
+      // For each x, find the y values where the decision function equals zero
+      const yCrossings: number[] = [];
+      const numYPoints = 250; // Match x resolution
+      
+      let prevY = extendedYMin;
+      let prevDecisionValue = calculateRBFDecisionFunction(x, prevY);
+      for (let j = 1; j <= numYPoints; j++) {
+        const y = extendedYMin + (j / numYPoints) * (extendedYMax - extendedYMin);
+        const decisionValue = calculateRBFDecisionFunction(x, y);
+        
+        // Check if we crossed zero in y-direction (horizontal crossing)
+        if (decisionValue * prevDecisionValue <= 0 && Math.abs(decisionValue - prevDecisionValue) > 0.00001) {
+          // Interpolate to find the exact boundary point
+          const exactY = prevY + (y - prevY) * Math.abs(prevDecisionValue) / Math.abs(decisionValue - prevDecisionValue);
+          if (exactY >= extendedYMin && exactY <= extendedYMax) {
+            yCrossings.push(exactY);
+          }
+        }
+        prevY = y;
+        prevDecisionValue = decisionValue;
+      }
+      
+      // Choose a single crossing per x: the one closest to the midpoint between class centers
+      if (yCrossings.length > 0) {
+        let bestY = yCrossings[0];
+        let bestDist = Math.abs(bestY - targetMidY);
+        for (let k = 1; k < yCrossings.length; k++) {
+          const dist = Math.abs(yCrossings[k] - targetMidY);
+          if (dist < bestDist) {
+            bestY = yCrossings[k];
+            bestDist = dist;
+          }
+        }
+        rawPoints.push({ x, y: bestY });
+      }
+    }
+    
+    // Smooth the curve with a light moving average to ensure continuity
+    const windowSize = 3; // small smoothing window
+    const boundaryPoints: { x: number; y: number }[] = [];
+    for (let i = 0; i < rawPoints.length; i++) {
+      let sumY = 0;
+      let count = 0;
+      for (let w = -windowSize; w <= windowSize; w++) {
+        const idx = i + w;
+        if (idx >= 0 && idx < rawPoints.length) {
+          sumY += rawPoints[idx].y;
+          count++;
+        }
+      }
+      boundaryPoints.push({ x: rawPoints[i].x, y: sumY / count });
+    }
+    
+    // Sort points by x coordinate then y for smooth rendering
+    boundaryPoints.sort((a, b) => {
+      if (Math.abs(a.x - b.x) < 0.001) {
+        return a.y - b.y;
+      }
+      return a.x - b.x;
+    });
+    
+    return boundaryPoints;
+  };
+  
+  // Helper function to calculate RBF decision function at a point
+  const calculateRBFDecisionFunction = (x: number, y: number): number => {
+    // Calculate influence from positive class (loyal customers - purple)
+    let posInfluence = 0;
+    positiveData.forEach(point => {
+      const dx = x - point.x;
+      const dy = y - point.y;
+      const distSq = dx * dx + dy * dy;
+      // Gaussian kernel: exp(-gamma * dist^2)
+      // Higher gamma = tighter influence (more detail)
+      posInfluence += Math.exp(-gamma * distSq);
+    });
+    posInfluence /= positiveData.length;
+    
+    // Calculate influence from negative class (occasional shoppers - gray)
+    let negInfluence = 0;
+    negativeData.forEach(point => {
+      const dx = x - point.x;
+      const dy = y - point.y;
+      const distSq = dx * dx + dy * dy;
+      negInfluence += Math.exp(-gamma * distSq);
+    });
+    negInfluence /= negativeData.length;
+    
+    // Adjust the influence based on C (strictness)
+    // Higher C means tighter boundaries (more strict classification)
+    const cAdjustment = 1 + (C - 1) * 0.2;
+    
+    // Decision function: positive means loyal customer region, negative means occasional shopper region
+    return (posInfluence * cAdjustment) - negInfluence;
+  };
+
   // Calculate polynomial decision boundary for polynomial kernel
   const getPolynomialDecisionBoundary = () => {
     if (dataset.kernel !== 'polynomial') return [];
@@ -225,7 +354,123 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
     return boundaryPoints;
   };
 
-  const decisionBoundaryLine = dataset.kernel === 'linear' ? getDecisionBoundaryLine() : getPolynomialDecisionBoundary();
+  // Calculate sigmoid decision boundary (S-shaped curve)
+  const getSigmoidDecisionBoundary = () => {
+    if (dataset.kernel !== 'sigmoid') return [];
+    
+    const xMin = Math.min(...dataset.data.map(d => d.x));
+    const xMax = Math.max(...dataset.data.map(d => d.x));
+    const yMin = Math.min(...dataset.data.map(d => d.y));
+    const yMax = Math.max(...dataset.data.map(d => d.y));
+    
+    // Extend the range to cover the whole plot
+    const xRange = xMax - xMin;
+    const yRange = yMax - yMin;
+    const extendedXMin = xMin - xRange * 0.2;
+    const extendedXMax = xMax + xRange * 0.2;
+    const extendedYMin = yMin - yRange * 0.2;
+    const extendedYMax = yMax + yRange * 0.2;
+    
+    // Calculate class centers to determine S-curve inflection point
+    const posCenter = {
+      x: positiveData.reduce((sum, p) => sum + p.x, 0) / positiveData.length,
+      y: positiveData.reduce((sum, p) => sum + p.y, 0) / positiveData.length
+    };
+    
+    const negCenter = {
+      x: negativeData.reduce((sum, p) => sum + p.x, 0) / negativeData.length,
+      y: negativeData.reduce((sum, p) => sum + p.y, 0) / negativeData.length
+    };
+    
+    // Middle point - inflection point of S-curve
+    const midX = (posCenter.x + negCenter.x) / 2;
+    const midY = (posCenter.y + negCenter.y) / 2;
+    
+    // Create S-curve using sigmoid function
+    const boundaryPoints: { x: number; y: number }[] = [];
+    const numPoints = 400; // Much higher resolution for ultra-smooth curve
+    
+    // Parameters for S-curve shape
+    const amplitude = yRange * 0.35; // More pronounced S-shape
+    const steepness = Math.max(1.5, gamma * 0.8); // Extra gradual transition for ultra-smooth S
+    
+    for (let i = 0; i <= numPoints; i++) {
+      const t = i / numPoints;
+      const x = extendedXMin + t * (extendedXMax - extendedXMin);
+      
+      // Calculate sigmoid S-curve using tanh with smoothing
+      // This creates a smooth S-shape transitioning from -1 to +1
+      const sigmoidArg = (x - midX) / steepness;
+      const sigmoidValue = Math.tanh(sigmoidArg);
+      
+      // Create S-curve that transitions between the class regions
+      // Reverse the sign so upper S is above red, lower S is below green
+      const y = midY - amplitude * sigmoidValue;
+      
+      // Adjust based on C (strictness) - shifts the curve up/down
+      const cShift = (C - 1) * yRange * 0.02;
+      const adjustedY = y + cShift;
+      
+      if (adjustedY >= extendedYMin && adjustedY <= extendedYMax) {
+        boundaryPoints.push({ x, y: adjustedY });
+      }
+    }
+    
+    // Apply smoothing to make the curve even smoother
+    const smoothedPoints: { x: number; y: number }[] = [];
+    const windowSize = 25; // Very large smoothing window for ultra-smooth S-curve
+    for (let i = 0; i < boundaryPoints.length; i++) {
+      let sumY = 0;
+      let count = 0;
+      for (let w = -windowSize; w <= windowSize; w++) {
+        const idx = i + w;
+        if (idx >= 0 && idx < boundaryPoints.length) {
+          sumY += boundaryPoints[idx].y;
+          count++;
+        }
+      }
+      smoothedPoints.push({ x: boundaryPoints[i].x, y: sumY / count });
+    }
+    
+    return smoothedPoints;
+  };
+  
+  // Helper function to calculate sigmoid decision function
+  const calculateSigmoidDecisionFunction = (x: number, y: number): number => {
+    // For sigmoid kernel with health risk data (age vs cholesterol)
+    // Create an S-curve based on the sigmoid function
+    // Risk increases with age (x) and cholesterol (y)
+    
+    // Calculate distances to class centers
+    const posCenter = {
+      x: positiveData.reduce((sum, p) => sum + p.x, 0) / positiveData.length,
+      y: positiveData.reduce((sum, p) => sum + p.y, 0) / positiveData.length
+    };
+    
+    const negCenter = {
+      x: negativeData.reduce((sum, p) => sum + p.x, 0) / negativeData.length,
+      y: negativeData.reduce((sum, p) => sum + p.y, 0) / negativeData.length
+    };
+    
+    // Distance to each class center
+    const distToPos = Math.sqrt((x - posCenter.x) ** 2 + (y - posCenter.y) ** 2);
+    const distToNeg = Math.sqrt((x - negCenter.x) ** 2 + (y - negCenter.y) ** 2);
+    
+    // Use sigmoid to create S-shaped transition
+    // Higher gamma = steeper S-curve
+    const normalizedDiff = (distToNeg - distToPos) / Math.max(distToPos + distToNeg, 0.0001);
+    const sigmoidValue = Math.tanh(gamma * normalizedDiff * 10);
+    
+    // Adjust based on C (strictness)
+    const cAdjustment = 1 + (C - 1) * 0.2;
+    
+    return sigmoidValue * cAdjustment;
+  };
+
+  const decisionBoundaryLine = dataset.kernel === 'linear' ? getDecisionBoundaryLine() 
+    : dataset.kernel === 'rbf' ? getRBFDecisionBoundary() 
+    : dataset.kernel === 'sigmoid' ? getSigmoidDecisionBoundary()
+    : getPolynomialDecisionBoundary();
   const marginLines = getMarginLines();
 
   // Custom tooltip with enhanced info
@@ -378,6 +623,34 @@ export const SVMVisualization = ({ dataset, result, C, gamma, polynomialDegree =
                       dataKey="y"
                       stroke="hsl(var(--foreground))"
                       strokeWidth={4}
+                      strokeDasharray="8 4"
+                      dot={false}
+                      connectNulls={true}
+                    />
+                  )}
+                  
+                  {/* Decision Boundary Curve for RBF Kernel */}
+                  {dataset.kernel === 'rbf' && decisionBoundaryLine.length > 0 && (
+                    <Line
+                      name="Decision Boundary"
+                      data={decisionBoundaryLine}
+                      dataKey="y"
+                      stroke="hsl(var(--foreground))"
+                      strokeWidth={3}
+                      strokeDasharray="10 5"
+                      dot={false}
+                      connectNulls={true}
+                    />
+                  )}
+                  
+                  {/* Decision Boundary Curve for Sigmoid Kernel */}
+                  {dataset.kernel === 'sigmoid' && decisionBoundaryLine.length > 0 && (
+                    <Line
+                      name="Decision Boundary"
+                      data={decisionBoundaryLine}
+                      dataKey="y"
+                      stroke="hsl(var(--foreground))"
+                      strokeWidth={3}
                       strokeDasharray="8 4"
                       dot={false}
                       connectNulls={true}
